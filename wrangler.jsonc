@@ -1,0 +1,60 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "supatabs-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-28",
+  "durable_objects": {
+    "bindings": [
+      { "name": "VAULTS", "class_name": "VaultDurableObject" }
+    ]
+  },
+  "exports": {
+    "VaultDurableObject": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "vars": {
+    "DEFAULT_VAULT_NAME": "default",
+    "MAX_REQUEST_BYTES": "10485760",
+    "MAX_ITEM_BYTES": "1048576",
+    "MAX_MUTATIONS_PER_SYNC": "500",
+    "MAX_RESPONSE_ITEMS": "1000",
+    "MAX_RESPONSE_BYTES": "1500000",
+    "SIGNATURE_WINDOW_SECONDS": "300",
+    "PAIRING_TTL_SECONDS": "600",
+    "PAIRING_RATE_LIMIT": "10",
+    "PAIRING_RATE_WINDOW_SECONDS": "600"
+  },
+  "env": {
+    "staging": {
+      "name": "supatabs-sync-staging",
+      "durable_objects": { "bindings": [{ "name": "VAULTS", "class_name": "VaultDurableObject" }] },
+      "vars": {
+        "DEFAULT_VAULT_NAME": "default",
+        "MAX_REQUEST_BYTES": "10485760",
+        "MAX_ITEM_BYTES": "1048576",
+        "MAX_MUTATIONS_PER_SYNC": "500",
+        "MAX_RESPONSE_ITEMS": "1000",
+        "MAX_RESPONSE_BYTES": "1500000",
+        "SIGNATURE_WINDOW_SECONDS": "300",
+        "PAIRING_TTL_SECONDS": "600",
+        "PAIRING_RATE_LIMIT": "10",
+        "PAIRING_RATE_WINDOW_SECONDS": "600"
+      }
+    },
+    "production": {
+      "name": "supatabs-sync-production",
+      "durable_objects": { "bindings": [{ "name": "VAULTS", "class_name": "VaultDurableObject" }] },
+      "vars": {
+        "DEFAULT_VAULT_NAME": "default",
+        "MAX_REQUEST_BYTES": "10485760",
+        "MAX_ITEM_BYTES": "1048576",
+        "MAX_MUTATIONS_PER_SYNC": "500",
+        "MAX_RESPONSE_ITEMS": "1000",
+        "MAX_RESPONSE_BYTES": "1500000",
+        "SIGNATURE_WINDOW_SECONDS": "300",
+        "PAIRING_TTL_SECONDS": "600",
+        "PAIRING_RATE_LIMIT": "10",
+        "PAIRING_RATE_WINDOW_SECONDS": "600"
+      }
+    }
+  }
+}

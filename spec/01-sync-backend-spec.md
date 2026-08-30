@@ -433,6 +433,8 @@ A tombstone must preserve:
 - deletion revision
 - deleted flag
 
+In the normative Phase 1 BYO profile, tombstones are terminal. Even a mutation whose `expectedRevision` matches the latest tombstone MUST conflict if it attempts to make that `itemId` active. Restored content uses a new `itemId`.
+
 V1 MAY retain tombstones indefinitely.
 
 Future GC may remove tombstones only when correctness can be proven using all non-revoked device cursors plus a safety retention window.
@@ -587,7 +589,14 @@ Request:
 
 ```json
 {
-  "publicKey": "base64..."
+  "protocolVersion": 1,
+  "transferPublicKey": "base64...",
+  "device": {
+    "deviceId": "...",
+    "authAlgorithm": "ecdsa-p256-sha256",
+    "authPublicKey": "base64-SPKI-DER",
+    "metadataCiphertext": null
+  }
 }
 ```
 
@@ -620,19 +629,27 @@ POST /v1/pairings/{pairingId}/approve
 
 Authenticated trusted device.
 
-Body contains only client-produced opaque encrypted transfer data.
+Body contains only client-produced opaque encrypted transfer data. Approval atomically registers the proposed device identity supplied when the pairing was created.
 
 ### Poll
 
 ```http
-GET /v1/pairings/{pairingId}?secret=...
+GET /v1/pairings/{pairingId}
+Authorization: SupaTabs-Pairing <polling-secret>
 ```
 
 New device polls using its secret.
 
 ### Consume
 
-After the new device successfully obtains the packet, mark it consumed and remove it promptly.
+Polling does not consume the packet. After the new device successfully obtains it, call:
+
+```http
+POST /v1/pairings/{pairingId}/consume
+Authorization: SupaTabs-Pairing <polling-secret>
+```
+
+Consumption is idempotent and removes the transfer payload promptly.
 
 ---
 
@@ -700,6 +717,11 @@ Stable error codes:
 - `rate_limited`
 - `payload_too_large`
 - `internal_error`
+- `response_too_large`
+- `tombstone_terminal`
+- `last_active_device`
+- `invalid_pairing_state`
+- `not_found`
 
 Do not expose SQLite internals or stack traces in production responses.
 
@@ -743,6 +765,7 @@ Implement configurable:
 - max item ciphertext size;
 - max mutations/request;
 - max returned changes/request;
+- max serialized response bytes;
 - pairing creation rate;
 - signature time window.
 
@@ -891,7 +914,147 @@ Do not block Phase 1 on:
 
 ---
 
-## 25. Current platform references
+## 25. Normative Phase 1 BYO profile
+
+This section resolves the implementation choices left open by the preceding general specification. It is normative for the Phase 1 single-vault BYO server.
+
+### 25.1 Single-vault routing and discovery
+
+Each deployment has exactly one named default Durable Object. The default name is deployment configuration and is not derived from `vaultId`.
+
+Before setup, `GET /v1/info` initializes only server metadata and returns `setupRequired: true`. Its `serverId` MUST remain stable across Durable Object eviction and Worker deployments. After setup it also returns the non-secret default `vaultHandle`, allowing recovery from a lost bootstrap HTTP response.
+
+Successful bootstrap returns the portable `vaultId`, backend-specific Durable Object ID string as `vaultHandle`, and registered `deviceId`. After bootstrap, authenticated gateway routes MUST accept only that default object's exact handle. Other syntactically valid Durable Object IDs MUST return `vault_not_found` and MUST NOT create new objects.
+
+### 25.2 Bootstrap wire contract
+
+```http
+POST /v1/bootstrap/device
+Authorization: Bearer <high-entropy-setup-token>
+Content-Type: application/json
+```
+
+```json
+{
+  "protocolVersion": 1,
+  "vaultId": "portable-vault-id",
+  "device": {
+    "deviceId": "first-device-id",
+    "authAlgorithm": "ecdsa-p256-sha256",
+    "authPublicKey": "base64-SPKI-DER",
+    "metadataCiphertext": null
+  }
+}
+```
+
+`authPublicKey` is a padded RFC 4648 base64 encoding of an ECDSA P-256 SubjectPublicKeyInfo DER value. Bootstrap MUST validate that WebCrypto can import it for ECDSA verification.
+
+The configured setup token is accepted only while `bootstrap_completed_at` is null. The device insert and bootstrap marker update MUST be one transaction. Once completed, all later bootstrap calls return `setup_already_completed`, including calls presenting the original token. Operators SHOULD delete the Cloudflare secret after bootstrap.
+
+### 25.3 SupaTabs RFC 9421 signature profile
+
+Authenticated requests MUST contain:
+
+- `X-SupaTabs-Device-Id`;
+- `X-SupaTabs-Vault-Handle`;
+- `X-SupaTabs-Request-Id`;
+- `Signature-Input` and `Signature` using label `sig1`;
+- `Content-Digest: sha-256=:<base64>:` when the body is non-empty.
+
+The covered component order is fixed:
+
+```text
+"@method" "@path" "@query"
+["content-digest" when a body is present]
+"x-supatabs-device-id"
+"x-supatabs-vault-handle"
+"x-supatabs-request-id"
+```
+
+`@method` is lowercase, `@path` is the URL pathname, and `@query` is the leading-question-mark query string or `?` when empty. Signature parameters MUST appear in this order:
+
+```text
+;created=<unix-seconds>;expires=<unix-seconds>;keyid="<deviceId>";alg="ecdsa-p256-sha256"
+```
+
+`keyid` MUST equal `X-SupaTabs-Device-Id`. The validity interval MUST be no longer than the configured five-minute default. Implementations MAY allow at most 30 seconds of clock skew. ECDSA signatures use SHA-256 and the WebCrypto P-256 signature representation. The request body digest covers the exact received bytes.
+
+For `/v1/sync`, `syncRequestId` identifies protocol idempotency and `X-SupaTabs-Request-Id` identifies the signed HTTP request; clients MAY use the same value. Retrying a sync MAY produce a fresh HTTP signature but MUST preserve the exact JSON body and `syncRequestId`.
+
+### 25.4 Final sync rules
+
+- A request containing the same `itemId` more than once is `invalid_request`.
+- `cursor` MUST NOT exceed the committed `serverRevision` at the beginning of the transaction.
+- A tombstone is terminal in v1. A mutation attempting to make that `itemId` active is a conflict with code `tombstone_terminal`, even when `expectedRevision` equals the tombstone revision. Restoration requires a new `itemId`.
+- If an expected nonzero revision names no existing item, the conflict's `current` value is `null`.
+- Idempotency compares a SHA-256 digest of the exact request body. Identical reuse returns the stored JSON bytes verbatim; different reuse returns `request_id_reused`.
+- Results are retained for no more than 24 hours and at most the newest 64 requests per device.
+- Pull pagination stops at the first of the requested item limit, configured item limit, or configured serialized-response byte limit. `nextCursor` and `hasMore` retain the rules in section 8.
+- If mandatory mutation/conflict results exceed the response byte limit, the transaction MUST roll back and return `response_too_large`; the client retries smaller mutation batches.
+
+### 25.5 Device, envelope, and pairing rules
+
+Revoking an already-revoked or unknown device is idempotent. Revoking the final active device returns `last_active_device`. Revoking the calling device is otherwise allowed when another active device remains.
+
+Envelope `PUT` is an idempotent upsert and `DELETE` is idempotent. Phase 1 permits deletion of the final envelope because the backend cannot establish whether an opaque envelope is usable.
+
+Pairing creation uses this body:
+
+```json
+{
+  "protocolVersion": 1,
+  "transferPublicKey": "base64-opaque-transfer-key",
+  "device": {
+    "deviceId": "new-device-id",
+    "authAlgorithm": "ecdsa-p256-sha256",
+    "authPublicKey": "base64-SPKI-DER",
+    "metadataCiphertext": null
+  }
+}
+```
+
+Approval accepts `{ "transferPayload": "base64-opaque-payload" }` and atomically registers the proposed device, changes the pairing to `approved`, and stores the payload. Repeating the exact approval is idempotent; a different payload or invalid transition returns `invalid_pairing_state`.
+
+Polling and consumption authenticate with:
+
+```http
+Authorization: SupaTabs-Pairing <polling-secret>
+```
+
+The polling secret MUST NOT appear in a URL. `GET /v1/pairings/{pairingId}` does not consume an approved payload. `POST /v1/pairings/{pairingId}/consume` changes `approved` to `consumed`, clears the payload, and is idempotent when already consumed.
+
+### 25.6 Default operational limits
+
+| Limit | Default |
+|---|---:|
+| Request body | 10 MiB |
+| Decoded item/envelope/transfer ciphertext | 1 MiB |
+| Mutations per sync | 500 |
+| Returned changes | 1,000 |
+| Serialized sync response | 1,500,000 bytes |
+| Signature validity | 300 seconds |
+| Pairing lifetime | 600 seconds |
+| Pairing creation rate | 10/source/600 seconds |
+
+The response limit stays below Cloudflare's SQLite row limit so `response_json` can be persisted as one row. All values are deployment configuration and are returned where relevant from `/v1/info`.
+
+Additional stable error codes introduced by this profile are:
+
+- `response_too_large`
+- `tombstone_terminal`
+- `last_active_device`
+- `invalid_pairing_state`
+- `not_found`
+
+### 25.7 CORS and logging
+
+The BYO gateway returns wildcard CORS without credentials and supports preflight for all protocol headers and methods. This does not authorize requests; cryptographic device authentication remains mandatory.
+
+Production logs MUST contain only route templates/paths, method, status/error code, latency, sizes, counts, revisions, and hashed or truncated identifiers. Setup tokens, pairing secrets, keys, ciphertext, and plaintext application data MUST never be logged.
+
+---
+
+## 26. Current platform references
 
 - Cloudflare SQLite-backed Durable Objects:  
   https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/
@@ -901,4 +1064,5 @@ Do not block Phase 1 on:
   https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/
 - RFC 9421 HTTP Message Signatures:  
   https://www.rfc-editor.org/rfc/rfc9421
-
+- Durable Object class exports: https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/
+- Workers Vitest integration: https://developers.cloudflare.com/workers/testing/vitest-integration/

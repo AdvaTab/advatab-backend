@@ -1,0 +1,26 @@
+{
+  "name": "supatabs-sync-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --persist-to .wrangler/state",
+    "build": "wrangler deploy --dry-run --env=\"\" --outdir dist",
+    "typecheck": "tsc --noEmit",
+    "cf:typegen": "wrangler types",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:load": "vitest run --config vitest.load.config.ts",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "setup-token": "node scripts/generate-setup-token.mjs",
+    "smoke": "node scripts/smoke-test.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.1.2",
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.127.1"
+  }
+}
