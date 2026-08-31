@@ -1,6 +1,11 @@
 # SupaTabs Sync Backend
 
-Cloudflare Workers backend for SupaTabs Sync Protocol v1. A deployment owns one encrypted vault backed by one SQLite Durable Object. The service stores opaque ciphertext and device public keys; it never receives tab data or account encryption keys in plaintext.
+Phase 2 sync backend for SupaTabs Sync Protocol v1. A deployment owns one
+encrypted vault backed by one SQLite Durable Object. The service stores opaque
+ciphertext and device public keys; it never receives tab data or account
+encryption keys in plaintext. `customer-management` is the separate Phase 3
+control plane that can provision managed deployments without changing this
+wire contract.
 
 ## Requirements
 
@@ -21,6 +26,8 @@ Create `.dev.vars` before the first local bootstrap:
 
 ```dotenv
 SETUP_TOKEN=replace-with-output-from-npm-run-setup-token
+# Optional until recovery enrollment is needed:
+RECOVERY_TOKEN=replace-with-a-separate-recovery-enrollment-token
 ```
 
 Generate a high-entropy token with `npm run setup-token`. Local Durable Object data is persisted under `.wrangler/state`.
@@ -53,7 +60,23 @@ The load test is intentionally separate from the normal test command. It writes 
    npx wrangler secret delete SETUP_TOKEN --env staging
    ```
 
-The Durable Object persists that bootstrap has completed, so restoring the same secret cannot reopen setup. A lost final device cannot be replaced through bootstrap; use another paired device or Cloudflare point-in-time recovery.
+The Durable Object persists that bootstrap has completed, so restoring the same
+secret cannot initialize a different vault or device. A retry for the exact
+same vault/device/key is allowed only to recover a lost bootstrap response. A
+lost final device cannot be replaced through bootstrap; use another paired
+device, recovery enrollment, or Cloudflare point-in-time recovery.
+
+If a recovery secret is used without a trusted device, configure a separate
+`RECOVERY_TOKEN` and call `POST /v1/recovery/device` with the existing
+`vaultId`. The extension sends only the new device public key; it downloads
+the opaque recovery envelope and unwraps the AccountKey locally. Recovery
+enrollment does not alter the one-time bootstrap marker.
+
+For a deployed environment, install the recovery-enrollment token separately:
+
+```bash
+npx wrangler secret put RECOVERY_TOKEN --env staging
+```
 
 ## Deployment
 
@@ -88,5 +111,6 @@ The Cloudflare API token should be scoped to Workers Scripts edit access for the
 - `src/sync-engine.ts`: portable CAS decisions, cursor rules, and response-size pagination.
 - `src/signatures.ts`: the documented RFC 9421 SupaTabs signature profile and a reusable WebCrypto signer.
 - `src/validation.ts` and `src/protocol.ts`: dependency-free wire validation and public TypeScript contracts.
+- `spec/phase2-wire-fixtures.md`: canonical cross-repository request, response, encoding, and signature fixtures.
 
 The normative protocol is in `spec/01-sync-backend-spec.md`.

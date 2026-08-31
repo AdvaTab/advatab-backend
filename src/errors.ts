@@ -14,6 +14,7 @@ export type ErrorCode =
   | 'tombstone_terminal'
   | 'last_active_device'
   | 'invalid_pairing_state'
+  | 'recovery_unavailable'
   | 'not_found'
   | 'internal_error';
 

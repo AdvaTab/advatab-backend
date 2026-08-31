@@ -1,7 +1,7 @@
-# SupaTabs — Phase 1 Specification: Sync Backend
+# SupaTabs — Phase 2 Specification: Sync Backend
 
 **Status:** Implementation specification  
-**Phase:** 1 of 3  
+**Phase:** 2 of 3
 **Primary target:** Cloudflare Workers + SQLite-backed Durable Objects  
 **Protocol:** SupaTabs Sync Protocol v1  
 **Last updated:** 2026-08-30
@@ -14,9 +14,9 @@ Implement the storage and synchronization backend for SupaTabs.
 
 The backend is intentionally **application-agnostic**. It MUST NOT understand tabs, tab groups, URLs, titles, notes, tags, or other SupaTabs domain objects. It stores opaque encrypted records and coordinates synchronization between trusted devices.
 
-Phase 1 MUST be independently usable before the managed SupaTabs Cloud account/billing system exists.
+Phase 2 MUST be independently usable before the managed SupaTabs Cloud account/billing system exists.
 
-### Phase 1 provides
+### Phase 2 provides
 
 - One vault represented by one SQLite-backed Durable Object.
 - Revisioned opaque record storage.
@@ -433,7 +433,7 @@ A tombstone must preserve:
 - deletion revision
 - deleted flag
 
-In the normative Phase 1 BYO profile, tombstones are terminal. Even a mutation whose `expectedRevision` matches the latest tombstone MUST conflict if it attempts to make that `itemId` active. Restored content uses a new `itemId`.
+In the normative Phase 2 BYO profile, tombstones are terminal. Even a mutation whose `expectedRevision` matches the latest tombstone MUST conflict if it attempts to make that `itemId` active. Restored content uses a new `itemId`.
 
 V1 MAY retain tombstones indefinitely.
 
@@ -486,7 +486,7 @@ Normal `/sync` correctness MUST still rely on idempotent `syncRequestId`, not me
 
 ### Sensitive operations
 
-Phase 1 may authorize sensitive operations using a currently trusted device key.
+Phase 2 may authorize sensitive operations using a currently trusted device key.
 
 Phase 3 will add fresh passkey/WebAuthn authorization for high-risk cloud-account operations.
 
@@ -506,7 +506,7 @@ Returns public/non-secret state plus opaque encrypted metadata.
 
 ### Register device
 
-For Phase 1, support either:
+For Phase 2, support either:
 
 ```http
 POST /v1/bootstrap/device
@@ -518,8 +518,9 @@ A setup token MUST:
 
 - be high entropy;
 - be supplied outside the normal sync data;
-- be invalidated after first successful bootstrap;
-- never be accepted again.
+- authorize only the initial vault/device bootstrap and an exact retry of that
+  same bootstrap when the response may have been lost;
+- never authorize a different vault, device, or public key after setup.
 
 ### Revoke device
 
@@ -803,9 +804,9 @@ Request logs SHOULD identify devices/vaults using truncated or hashed IDs where 
 
 ## 20. Backup/recovery
 
-Phase 1 does not require R2 backups.
+Phase 2 does not require R2 backups.
 
-SQLite-backed Durable Objects provide platform-level point-in-time recovery; application export will be handled primarily by the extension in Phase 2.
+SQLite-backed Durable Objects provide platform-level point-in-time recovery; application export is handled primarily by the extension.
 
 The backend SHOULD not add a second backup format that requires plaintext.
 
@@ -878,9 +879,9 @@ At least:
 
 ---
 
-## 23. Phase 1 acceptance criteria
+## 23. Phase 2 acceptance criteria
 
-Phase 1 is complete when:
+Phase 2 is complete when:
 
 - A fresh backend can be bootstrapped without Phase 3.
 - Two devices can authenticate using independent device keys.
@@ -899,7 +900,7 @@ Phase 1 is complete when:
 
 ## 24. Deferred decisions
 
-Do not block Phase 1 on:
+Do not block Phase 2 on:
 
 - billing provider;
 - product price;
@@ -914,9 +915,9 @@ Do not block Phase 1 on:
 
 ---
 
-## 25. Normative Phase 1 BYO profile
+## 25. Normative Phase 2 BYO profile
 
-This section resolves the implementation choices left open by the preceding general specification. It is normative for the Phase 1 single-vault BYO server.
+This section resolves the implementation choices left open by the preceding general specification. It is normative for the Phase 2 single-vault BYO server.
 
 ### 25.1 Single-vault routing and discovery
 
@@ -949,7 +950,9 @@ Content-Type: application/json
 
 `authPublicKey` is a padded RFC 4648 base64 encoding of an ECDSA P-256 SubjectPublicKeyInfo DER value. Bootstrap MUST validate that WebCrypto can import it for ECDSA verification.
 
-The configured setup token is accepted only while `bootstrap_completed_at` is null. The device insert and bootstrap marker update MUST be one transaction. Once completed, all later bootstrap calls return `setup_already_completed`, including calls presenting the original token. Operators SHOULD delete the Cloudflare secret after bootstrap.
+The configured setup token is accepted only while `bootstrap_completed_at` is null. The device insert and bootstrap marker update MUST be one transaction. Once completed, a retry with the same `vaultId` and identical `deviceId` and SPKI public key MUST return status `200` with the canonical `vaultId`, `vaultHandle`, and `deviceId` response. A retry with any different vault ID, device ID, or public key returns `setup_already_completed`, including calls presenting the original token. Operators SHOULD delete the Cloudflare secret after bootstrap.
+
+Recovery enrollment uses a separate `POST /v1/recovery/device` route with the same body and response shape. It requires `Authorization: Bearer <RECOVERY_TOKEN>`, an existing matching `vaultId`, and a configured recovery-enrollment token. It registers the supplied device after the vault is initialized; repeating the same device ID and SPKI is idempotent. The recovery token is an operator/control-plane authorization only. The recovery secret and AccountKey MUST NOT be sent to the backend. If no recovery token is configured, the route returns `recovery_unavailable`.
 
 ### 25.3 SupaTabs RFC 9421 signature profile
 
@@ -996,7 +999,7 @@ For `/v1/sync`, `syncRequestId` identifies protocol idempotency and `X-SupaTabs-
 
 Revoking an already-revoked or unknown device is idempotent. Revoking the final active device returns `last_active_device`. Revoking the calling device is otherwise allowed when another active device remains.
 
-Envelope `PUT` is an idempotent upsert and `DELETE` is idempotent. Phase 1 permits deletion of the final envelope because the backend cannot establish whether an opaque envelope is usable.
+Envelope `PUT` is an idempotent upsert and `DELETE` is idempotent. Phase 2 permits deletion of the final envelope because the backend cannot establish whether an opaque envelope is usable.
 
 Pairing creation uses this body:
 
@@ -1045,6 +1048,7 @@ Additional stable error codes introduced by this profile are:
 - `last_active_device`
 - `invalid_pairing_state`
 - `not_found`
+- `recovery_unavailable`
 
 ### 25.7 CORS and logging
 

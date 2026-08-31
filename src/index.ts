@@ -32,6 +32,7 @@ function withCors(response: Response): Response {
 function isDefaultRoute(method: string, pathname: string): boolean {
   if (method === 'GET' && pathname === '/v1/info') return true;
   if (method === 'POST' && pathname === '/v1/bootstrap/device') return true;
+  if (method === 'POST' && pathname === '/v1/recovery/device') return true;
   if (method === 'POST' && pathname === '/v1/pairings') return true;
   if (method === 'GET' && /^\/v1\/pairings\/[^/]+$/.test(pathname) && pathname !== '/v1/pairings/pending') return true;
   return method === 'POST' && /^\/v1\/pairings\/[^/]+\/consume$/.test(pathname);

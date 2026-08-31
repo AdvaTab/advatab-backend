@@ -29,3 +29,9 @@ export function jsonByteLength(value: unknown): number {
 export function changeFits(response: SyncResponse, candidate: SyncItem, maxBytes: number): boolean {
   return jsonByteLength({ ...response, nextCursor: candidate.revision, changes: [...response.changes, candidate] }) <= maxBytes;
 }
+
+export function assertPageProgress(cursor: number, nextCursor: number, hasMore: boolean): void {
+  if (hasMore && nextCursor === cursor) {
+    throw new ApiError('response_too_large', 'The next synchronized item exceeds maxResponseBytes; retry with a smaller response limit.', 413);
+  }
+}

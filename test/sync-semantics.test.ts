@@ -1,6 +1,7 @@
 import { exports } from 'cloudflare:workers';
 import { expect, it } from 'vitest';
 import { signRequest } from '../src/signatures';
+import { assertPageProgress } from '../src/sync-engine';
 import { createDevice, jsonRequest, responseJson, signedRequest } from './helpers';
 
 async function bootstrap() {
@@ -70,4 +71,9 @@ it('handles mixed conflicts, monotonic revisions, pagination, and signature fail
   const expiredResponse = await exports.default.fetch(expired);
   expect(expiredResponse.status).toBe(401);
   expect(await responseJson<{ error: { code: string } }>(expiredResponse)).toMatchObject({ error: { code: 'signature_expired' } });
+});
+
+it('rejects a response that cannot advance a non-empty page', () => {
+  expect(() => assertPageProgress(4, 4, true)).toThrow(/maxResponseBytes/);
+  expect(() => assertPageProgress(4, 4, false)).not.toThrow();
 });

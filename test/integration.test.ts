@@ -22,8 +22,22 @@ describe('SupaTabs sync backend', () => {
     const { vaultHandle } = await responseJson<{ vaultHandle: string }>(bootstrap);
 
     const repeatedBootstrap = await exports.default.fetch(bootstrapRequest.clone() as unknown as RequestInfo);
-    expect(repeatedBootstrap.status).toBe(409);
-    expect(await responseJson<ErrorBody>(repeatedBootstrap)).toMatchObject({ error: { code: 'setup_already_completed' } });
+    expect(repeatedBootstrap.status).toBe(200);
+    expect(await responseJson<{ vaultHandle: string; vaultId: string; deviceId: string }>(repeatedBootstrap)).toMatchObject({
+      vaultHandle,
+      vaultId: 'vault-test',
+      deviceId: deviceA.deviceId,
+    });
+
+    const differentDevice = await createDevice('different-device');
+    const differentBootstrap = jsonRequest('/v1/bootstrap/device', 'POST', {
+      protocolVersion: 1,
+      vaultId: 'vault-test',
+      device: { deviceId: differentDevice.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: differentDevice.publicKey },
+    }, { authorization: 'Bearer test-setup-token-with-high-entropy-00000001' });
+    const differentResponse = await exports.default.fetch(differentBootstrap);
+    expect(differentResponse.status).toBe(409);
+    expect(await responseJson<ErrorBody>(differentResponse)).toMatchObject({ error: { code: 'setup_already_completed' } });
 
     const firstSyncBody = {
       protocolVersion: 1,
@@ -68,8 +82,14 @@ describe('SupaTabs sync backend', () => {
     const pairing = await responseJson<{ pairingId: string; pollingSecret: string }>(await exports.default.fetch(pairingCreate));
 
     const pendingRequest = await signedRequest('/v1/pairings/pending', 'GET', deviceA, vaultHandle);
-    const pending = await responseJson<{ pairings: Array<{ pairingId: string }> }>(await exports.default.fetch(pendingRequest));
+    const pending = await responseJson<{
+      pairings: Array<{ pairingId: string; transferPublicKey: string; device: { deviceId: string; authAlgorithm: string; authPublicKey: string } }>;
+    }>(await exports.default.fetch(pendingRequest));
     expect(pending.pairings.map((entry) => entry.pairingId)).toContain(pairing.pairingId);
+    expect(pending.pairings.find((entry) => entry.pairingId === pairing.pairingId)).toMatchObject({
+      transferPublicKey: deviceB.publicKey,
+      device: { deviceId: deviceB.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: deviceB.publicKey },
+    });
 
     const approveRequest = await signedRequest(`/v1/pairings/${pairing.pairingId}/approve`, 'POST', deviceA, vaultHandle, { transferPayload: 'd3JhcHBlZC1hY2NvdW50LWtleQ==' });
     const approveResponse = await exports.default.fetch(approveRequest);
@@ -109,6 +129,36 @@ describe('SupaTabs sync backend', () => {
     const lastResponse = await exports.default.fetch(revokeLast);
     expect(lastResponse.status).toBe(409);
     expect(await responseJson<ErrorBody>(lastResponse)).toMatchObject({ error: { code: 'last_active_device' } });
+
+    const recoveryDevice = await createDevice('recovery-device');
+    const enrollBody = {
+      protocolVersion: 1,
+      vaultId: 'vault-test',
+      device: { deviceId: recoveryDevice.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: recoveryDevice.publicKey, metadataCiphertext: null },
+    };
+    const enrollRequest = jsonRequest('/v1/recovery/device', 'POST', enrollBody, {
+      authorization: 'Bearer test-recovery-token-with-high-entropy-00000002',
+    });
+    const enrolled = await exports.default.fetch(enrollRequest.clone() as unknown as RequestInfo);
+    expect(enrolled.status).toBe(201);
+    expect(await responseJson<{ vaultId: string; vaultHandle: string; deviceId: string }>(enrolled)).toMatchObject({
+      vaultId: 'vault-test',
+      vaultHandle,
+      deviceId: recoveryDevice.deviceId,
+    });
+
+    const retry = await exports.default.fetch(enrollRequest.clone() as unknown as RequestInfo);
+    expect(retry.status).toBe(200);
+
+    const wrongToken = await exports.default.fetch(jsonRequest('/v1/recovery/device', 'POST', enrollBody, {
+      authorization: 'Bearer wrong-recovery-token',
+    }));
+    expect(wrongToken.status).toBe(401);
+
+    const signed = await signedRequest('/v1/devices', 'GET', recoveryDevice, vaultHandle);
+    const deviceList = await responseJson<{ devices: Array<{ deviceId: string; authPublicKey: string }> }>(await exports.default.fetch(signed));
+    expect(deviceList.devices.map((device) => device.deviceId)).toContain(recoveryDevice.deviceId);
+    expect(deviceList.devices.find((device) => device.deviceId === recoveryDevice.deviceId)?.authPublicKey).toBe(recoveryDevice.publicKey);
   });
 
   it('rejects an arbitrary vault handle before authentication', async () => {

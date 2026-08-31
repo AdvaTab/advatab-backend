@@ -14,7 +14,7 @@ import {
 import { DEVICE_HEADER, REQUEST_HEADER, verifySignedRequest } from './signatures';
 import { parseBootstrap, parseEnvelope, parseId, parsePairingApprove, parsePairingCreate, parseSync } from './validation';
 import type { RuntimeEnv } from './env';
-import { assertCursor, changeFits, decideMutation, jsonByteLength } from './sync-engine';
+import { assertCursor, assertPageProgress, changeFits, decideMutation, jsonByteLength } from './sync-engine';
 
 type Sql = DurableObjectState['storage']['sql'];
 
@@ -202,6 +202,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
       const body = new Uint8Array(await request.arrayBuffer());
       if (request.method === 'GET' && url.pathname === '/v1/info') return this.info();
       if (request.method === 'POST' && url.pathname === '/v1/bootstrap/device') return await this.bootstrap(request, body);
+      if (request.method === 'POST' && url.pathname === '/v1/recovery/device') return await this.enrollRecoveryDevice(request, body);
       if (request.method === 'POST' && url.pathname === '/v1/pairings') return await this.createPairing(request, body);
       const pairingMatch = url.pathname.match(/^\/v1\/pairings\/([^/]+)$/);
       const consumeMatch = url.pathname.match(/^\/v1\/pairings\/([^/]+)\/consume$/);
@@ -243,13 +244,15 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
 
   private info(): Response {
     const meta = this.meta();
+    const capabilities = ['device-signatures', 'pairing', 'key-envelopes', 'terminal-tombstones'];
+    if (this.env.RECOVERY_TOKEN) capabilities.push('recovery-enrollment');
     return json({
       protocolVersions: [PROTOCOL_VERSION],
       serverId: meta.server_id,
       mode: 'single-user',
       setupRequired: !meta.bootstrap_completed_at,
       vaultHandle: meta.bootstrap_completed_at ? this.ctx.id.toString() : undefined,
-      capabilities: ['device-signatures', 'pairing', 'key-envelopes', 'terminal-tombstones'],
+      capabilities,
       limits: {
         maxRequestBytes: this.limits.maxRequestBytes,
         maxItemBytes: this.limits.maxItemBytes,
@@ -261,8 +264,6 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private async bootstrap(request: Request, body: Uint8Array): Promise<Response> {
-    const existing = this.meta();
-    if (existing.bootstrap_completed_at) throw new ApiError('setup_already_completed', 'The one-time bootstrap has already completed.', 409);
     const authorization = request.headers.get('authorization');
     const supplied = authorization?.startsWith('Bearer ') ? authorization.slice(7) : '';
     if (!this.env.SETUP_TOKEN || !supplied || !constantTimeEqual(supplied, this.env.SETUP_TOKEN)) {
@@ -270,12 +271,64 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
     }
     const input = parseBootstrap(await readJson(body), this.limits);
     await this.validateDevicePublicKey(input.device);
+    const existing = this.meta();
+    if (existing.bootstrap_completed_at) {
+      const registered = getOne<DeviceRow>(this.sql, 'SELECT * FROM devices WHERE device_id = ?', input.device.deviceId);
+      if (
+        existing.vault_id === input.vaultId
+        && registered?.auth_algorithm === input.device.authAlgorithm
+        && registered !== null
+        && bytesToBase64(bytes(registered.auth_public_key)) === input.device.authPublicKey
+      ) {
+        return json({ protocolVersion: PROTOCOL_VERSION, vaultId: input.vaultId, vaultHandle: this.ctx.id.toString(), deviceId: input.device.deviceId });
+      }
+      throw new ApiError('setup_already_completed', 'The one-time bootstrap has already completed.', 409);
+    }
     const timestamp = nowIso();
     this.ctx.storage.transactionSync(() => {
       const current = this.meta();
       if (current.bootstrap_completed_at) throw new ApiError('setup_already_completed', 'The one-time bootstrap has already completed.', 409);
       this.insertDevice(input.device, timestamp);
       this.sql.exec('UPDATE vault_meta SET vault_id = ?, bootstrap_completed_at = ? WHERE singleton = 1', input.vaultId, timestamp);
+    });
+    return json({ protocolVersion: PROTOCOL_VERSION, vaultId: input.vaultId, vaultHandle: this.ctx.id.toString(), deviceId: input.device.deviceId }, 201);
+  }
+
+  private async enrollRecoveryDevice(request: Request, body: Uint8Array): Promise<Response> {
+    if (!this.env.RECOVERY_TOKEN) throw new ApiError('recovery_unavailable', 'Recovery enrollment is not configured for this deployment.', 503);
+    const authorization = request.headers.get('authorization');
+    const supplied = authorization?.startsWith('Bearer ') ? authorization.slice(7) : '';
+    if (!supplied || !constantTimeEqual(supplied, this.env.RECOVERY_TOKEN)) {
+      throw new ApiError('unauthorized', 'The recovery enrollment token is invalid.', 401);
+    }
+    const input = parseBootstrap(await readJson(body), this.limits);
+    const existing = this.assertSetup();
+    if (existing.vault_id !== input.vaultId) throw new ApiError('vault_not_found', 'The vault ID does not match this deployment.', 404);
+    await this.validateDevicePublicKey(input.device);
+    const registered = getOne<DeviceRow>(this.sql, 'SELECT * FROM devices WHERE device_id = ?', input.device.deviceId);
+    if (registered) {
+      if (
+        registered.auth_algorithm === input.device.authAlgorithm
+        && bytesToBase64(bytes(registered.auth_public_key)) === input.device.authPublicKey
+      ) {
+        return json({ protocolVersion: PROTOCOL_VERSION, vaultId: input.vaultId, vaultHandle: this.ctx.id.toString(), deviceId: input.device.deviceId });
+      }
+      throw new ApiError('invalid_request', 'The recovery device ID is already registered with a different key.', 409);
+    }
+    this.ctx.storage.transactionSync(() => {
+      const current = this.meta();
+      if (!current.bootstrap_completed_at || current.vault_id !== input.vaultId) {
+        throw new ApiError('vault_not_found', 'The vault ID does not match this deployment.', 404);
+      }
+      const concurrent = getOne<DeviceRow>(this.sql, 'SELECT * FROM devices WHERE device_id = ?', input.device.deviceId);
+      if (concurrent) {
+        if (
+          concurrent.auth_algorithm === input.device.authAlgorithm
+          && bytesToBase64(bytes(concurrent.auth_public_key)) === input.device.authPublicKey
+        ) return;
+        throw new ApiError('invalid_request', 'The recovery device ID is already registered with a different key.', 409);
+      }
+      this.insertDevice(input.device, nowIso());
     });
     return json({ protocolVersion: PROTOCOL_VERSION, vaultId: input.vaultId, vaultHandle: this.ctx.id.toString(), deviceId: input.device.deviceId }, 201);
   }
@@ -375,6 +428,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
         base.nextCursor = candidate.revision;
       }
       base.hasMore = getOne<{ present: number }>(this.sql, 'SELECT 1 AS present FROM sync_items WHERE revision > ? LIMIT 1', base.nextCursor) !== null;
+      assertPageProgress(input.cursor, base.nextCursor, base.hasMore);
       const serialized = JSON.stringify(base);
       if (new TextEncoder().encode(serialized).byteLength > this.limits.maxResponseBytes) throw new ApiError('response_too_large', 'Sync response exceeds maxResponseBytes.', 413);
       const timestamp = nowIso();
