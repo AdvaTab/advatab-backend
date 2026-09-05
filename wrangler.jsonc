@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "supatabs-sync",
+  "name": "geboom-sync",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-28",
   "durable_objects": {
@@ -25,7 +25,7 @@
   },
   "env": {
     "staging": {
-      "name": "supatabs-sync-staging",
+      "name": "geboom-sync-staging",
       "durable_objects": { "bindings": [{ "name": "VAULTS", "class_name": "VaultDurableObject" }] },
       "vars": {
         "DEFAULT_VAULT_NAME": "default",
@@ -41,7 +41,7 @@
       }
     },
     "production": {
-      "name": "supatabs-sync-production",
+      "name": "geboom-sync-production",
       "durable_objects": { "bindings": [{ "name": "VAULTS", "class_name": "VaultDurableObject" }] },
       "vars": {
         "DEFAULT_VAULT_NAME": "default",

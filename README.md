@@ -1,4 +1,4 @@
-# SupaTabs Sync Backend
+# Geboom Sync Backend
 
 Phase 2 sync backend for SupaTabs Sync Protocol v1. A deployment owns one
 encrypted vault backed by one SQLite Durable Object. The service stores opaque
