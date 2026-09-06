@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "install:server": "node scripts/install.mjs",
+    "test:installer": "node --test scripts/install.test.mjs",
     "dev": "wrangler dev --persist-to .wrangler/state",
     "build": "wrangler deploy --dry-run --env=\"\" --outdir dist",
     "typecheck": "tsc --noEmit",

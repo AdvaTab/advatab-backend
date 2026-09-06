@@ -13,6 +13,59 @@ wire contract.
 - A Cloudflare account with Workers enabled
 - Wrangler authentication (`npx wrangler login`) for manual deployment
 
+## Automated server installation
+
+With Node.js 22 or newer and npm installed, run this from the backend checkout:
+
+```bash
+node scripts/install.mjs
+```
+
+The [installer](scripts/install.mjs) installs locked dependencies with `npm ci`,
+opens Wrangler's browser login, then asks for your account's workers.dev name,
+such as `klinki` or `klinki.workers.dev`. These are the only two interactive steps
+on a successful run. An existing Cloudflare account with Workers access is required.
+Custom domains such as `sync.example.com` are not supported by this installer.
+
+It registers the subdomain if the account does not have one, deploys
+`geboom-sync-production` and its SQLite Durable Object, and checks `/v1/info`.
+It uses Cloudflare's [subdomain API](https://developers.cloudflare.com/api/resources/workers/subresources/subdomains/methods/update/)
+and Wrangler's [deployment secrets file](https://developers.cloudflare.com/workers/configuration/secrets/).
+There is no separate database creation step or paid-plan upgrade.
+
+For a new Worker, it generates separate setup and recovery enrollment tokens.
+It saves them before deployment in an account-specific JSON file under
+`.server-install/`, which Git ignores, and prints the file path and server URL.
+Keep that file private and back it up. Unix file permissions are restricted;
+on Windows, the directory inherits your checkout's access permissions.
+Cloudflare login credentials are never saved in this file or printed by the script.
+
+Open the extension's Synchronization screen and use the server URL and
+`SETUP_TOKEN` from that file to create your vault. Vault encryption keys and the
+encryption recovery secret are created by the extension. The server's
+`RECOVERY_TOKEN` is a separate recovery enrollment credential.
+The installer never bootstraps a temporary device or creates your vault.
+
+Rerunning deploys code to the same production Worker and preserves all existing
+remote secrets, including an intentionally absent setup token. It does not
+recover unreadable remote secrets or guarantee that a local saved copy is current.
+For an existing deployment, use your original credentials. Follow the bootstrap
+instructions below to remove `SETUP_TOKEN` after creating the vault.
+
+If you belong to several accounts, the entered domain selects its owning account.
+For a new domain with multiple accounts, set `CLOUDFLARE_ACCOUNT_ID` before running.
+The script never renames an existing account subdomain. Invalid input, unavailable
+names, ambiguous accounts, or Cloudflare access errors stop with an error instead
+of adding more prompts. Fix the issue and rerun. A failed first deployment reuses
+its saved tokens. A failed discovery check leaves the deployment and credentials
+intact so you can retry the displayed discovery URL.
+
+Run the isolated installer tests without Cloudflare access:
+
+```bash
+npm run test:installer
+```
+
 ## Local development
 
 ```bash

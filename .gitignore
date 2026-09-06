@@ -4,3 +4,4 @@ dist/
 coverage/
 .dev.vars
 *.log
+.server-install/
