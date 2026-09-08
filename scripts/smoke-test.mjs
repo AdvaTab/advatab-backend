@@ -1,23 +1,23 @@
 import { webcrypto } from 'node:crypto';
 
 const { subtle } = webcrypto;
-const baseUrl = (process.env.SUPATABS_URL || 'http://127.0.0.1:8787').replace(/\/$/, '');
-const setupToken = process.env.SUPATABS_SETUP_TOKEN;
+const baseUrl = (process.env.ADVATAB_URL || 'http://127.0.0.1:8787').replace(/\/$/, '');
+const setupToken = process.env.ADVATAB_SETUP_TOKEN;
 const base64 = (value) => Buffer.from(value).toString('base64');
 
 async function sign(path, method, body, privateKey, deviceId, vaultHandle) {
   const bodyText = body === undefined ? undefined : JSON.stringify(body);
   const headers = new Headers(bodyText === undefined ? {} : { 'content-type': 'application/json' });
-  headers.set('x-supatabs-device-id', deviceId);
-  headers.set('x-supatabs-vault-handle', vaultHandle);
-  headers.set('x-supatabs-request-id', crypto.randomUUID());
+  headers.set('x-advatab-device-id', deviceId);
+  headers.set('x-advatab-vault-handle', vaultHandle);
+  headers.set('x-advatab-request-id', crypto.randomUUID());
   const components = ['@method', '@path', '@query'];
   if (bodyText !== undefined) {
     const digest = base64(await subtle.digest('SHA-256', Buffer.from(bodyText)));
     headers.set('content-digest', `sha-256=:${digest}:`);
     components.push('content-digest');
   }
-  components.push('x-supatabs-device-id', 'x-supatabs-vault-handle', 'x-supatabs-request-id');
+  components.push('x-advatab-device-id', 'x-advatab-vault-handle', 'x-advatab-request-id');
   const created = Math.floor(Date.now() / 1000);
   const parameters = `(${components.map((value) => `"${value}"`).join(' ')});created=${created};expires=${created + 300};keyid="${deviceId}";alg="ecdsa-p256-sha256"`;
   headers.set('signature-input', `sig1=${parameters}`);
@@ -47,7 +47,7 @@ if (!info.setupRequired) {
   console.log('Discovery passed. A bootstrapped vault requires existing device credentials for an authenticated smoke test.');
   process.exit(0);
 }
-if (!setupToken) throw new Error('Set SUPATABS_SETUP_TOKEN to bootstrap a fresh deployment.');
+if (!setupToken) throw new Error('Set ADVATAB_SETUP_TOKEN to bootstrap a fresh deployment.');
 
 const keys = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
 const publicKey = base64(await subtle.exportKey('spki', keys.publicKey));

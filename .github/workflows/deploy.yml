@@ -35,5 +35,5 @@ jobs:
       - name: Post-deploy discovery smoke test
         run: npm run smoke
         env:
-          SUPATABS_URL: ${{ vars.SUPATABS_URL }}
-          SUPATABS_SETUP_TOKEN: ${{ secrets.SUPATABS_SETUP_TOKEN }}
+          ADVATAB_URL: ${{ vars.ADVATAB_URL }}
+          ADVATAB_SETUP_TOKEN: ${{ secrets.ADVATAB_SETUP_TOKEN }}

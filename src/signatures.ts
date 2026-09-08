@@ -1,9 +1,9 @@
 import { base64ToBytes, bytesToBase64, sha256Base64, toArrayBuffer, utf8 } from './encoding';
 import { ApiError } from './errors';
 
-export const DEVICE_HEADER = 'x-supatabs-device-id';
-export const VAULT_HEADER = 'x-supatabs-vault-handle';
-export const REQUEST_HEADER = 'x-supatabs-request-id';
+export const DEVICE_HEADER = 'x-advatab-device-id';
+export const VAULT_HEADER = 'x-advatab-vault-handle';
+export const REQUEST_HEADER = 'x-advatab-request-id';
 
 interface SignatureParameters {
   components: string[];
@@ -70,7 +70,7 @@ export async function verifySignedRequest(
   const hasBody = body.byteLength > 0;
   const expected = expectedComponents(hasBody);
   if (parameters.components.length !== expected.length || parameters.components.some((value, index) => value !== expected[index])) {
-    throw new ApiError('unauthorized', 'Signature does not use the SupaTabs v1 component profile.', 401);
+    throw new ApiError('unauthorized', 'Signature does not use the AdvaTab v1 component profile.', 401);
   }
   if (parameters.componentList !== expected.map((value) => `"${value}"`).join(' ')) {
     throw new ApiError('unauthorized', 'Signature component serialization is invalid.', 401);

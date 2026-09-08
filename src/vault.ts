@@ -561,7 +561,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
     this.assertSetup();
     const input = parsePairingCreate(await readJson(body), this.limits);
     await this.validateDevicePublicKey(input.device);
-    const source = request.headers.get('x-supatabs-internal-source') || 'local';
+    const source = request.headers.get('x-advatab-internal-source') || 'local';
     const now = Date.now();
     const bucket = Math.floor(now / (this.limits.pairingRateWindowSeconds * 1000));
     this.ctx.storage.transactionSync(() => {
@@ -657,8 +657,8 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
 
   private pairingSecret(request: Request): string {
     const authorization = request.headers.get('authorization');
-    if (!authorization?.startsWith('SupaTabs-Pairing ')) throw new ApiError('unauthorized', 'Missing pairing authorization.', 401);
-    const secret = authorization.slice('SupaTabs-Pairing '.length);
+    if (!authorization?.startsWith('AdvaTab-Pairing ')) throw new ApiError('unauthorized', 'Missing pairing authorization.', 401);
+    const secret = authorization.slice('AdvaTab-Pairing '.length);
     if (secret.length < 32 || secret.length > 128) throw new ApiError('unauthorized', 'Invalid pairing authorization.', 401);
     return secret;
   }

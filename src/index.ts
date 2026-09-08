@@ -15,9 +15,9 @@ const corsHeaders: Record<string, string> = {
     'content-digest',
     'signature',
     'signature-input',
-    'x-supatabs-device-id',
-    'x-supatabs-vault-handle',
-    'x-supatabs-request-id',
+    'x-advatab-device-id',
+    'x-advatab-vault-handle',
+    'x-advatab-request-id',
   ].join(', '),
   'access-control-max-age': '86400',
 };
@@ -84,7 +84,7 @@ export default {
       }
       const headers = new Headers(request.headers);
       const source = request.headers.get('cf-connecting-ip') || 'local';
-      headers.set('x-supatabs-internal-source', await sha256Base64Url(utf8(source)));
+      headers.set('x-advatab-internal-source', await sha256Base64Url(utf8(source)));
       headers.delete('cf-connecting-ip');
       const forwarded = new Request(request.url, {
         method: request.method,

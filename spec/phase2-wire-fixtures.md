@@ -1,4 +1,4 @@
-# SupaTabs Sync v1 wire fixtures
+# AdvaTab Sync v1 wire fixtures
 
 This document is the small, checked-in contract fixture used by the sync backend
 and the extension. It covers the Phase 2 open/BYO protocol only. Managed cloud
@@ -79,7 +79,7 @@ For a non-empty body, the covered component order is exactly:
 
 ```text
 "@method" "@path" "@query" "content-digest"
-"x-supatabs-device-id" "x-supatabs-vault-handle" "x-supatabs-request-id"
+"x-advatab-device-id" "x-advatab-vault-handle" "x-advatab-request-id"
 ```
 
 For an empty body, omit `content-digest`. For:
@@ -87,16 +87,16 @@ For an empty body, omit `content-digest`. For:
 ```text
 POST https://sync.example.test/v1/sync?mode=full
 Body bytes (hex): 010203
-X-SupaTabs-Device-Id: device-first
-X-SupaTabs-Vault-Handle: backend-do-handle
-X-SupaTabs-Request-Id: request-01
+X-AdvaTab-Device-Id: device-first
+X-AdvaTab-Vault-Handle: backend-do-handle
+X-AdvaTab-Request-Id: request-01
 Content-Digest: sha-256=:AQID:
 ```
 
 the signature parameters are:
 
 ```text
-("@method" "@path" "@query" "content-digest" "x-supatabs-device-id" "x-supatabs-vault-handle" "x-supatabs-request-id");created=1700000000;expires=1700000300;keyid="device-first";alg="ecdsa-p256-sha256"
+("@method" "@path" "@query" "content-digest" "x-advatab-device-id" "x-advatab-vault-handle" "x-advatab-request-id");created=1700000000;expires=1700000300;keyid="device-first";alg="ecdsa-p256-sha256"
 ```
 
 and the canonical signature base is:
@@ -106,10 +106,10 @@ and the canonical signature base is:
 "@path": /v1/sync
 "@query": ?mode=full
 "content-digest": sha-256=:AQID:
-"x-supatabs-device-id": device-first
-"x-supatabs-vault-handle": backend-do-handle
-"x-supatabs-request-id": request-01
-"@signature-params": ("@method" "@path" "@query" "content-digest" "x-supatabs-device-id" "x-supatabs-vault-handle" "x-supatabs-request-id");created=1700000000;expires=1700000300;keyid="device-first";alg="ecdsa-p256-sha256"
+"x-advatab-device-id": device-first
+"x-advatab-vault-handle": backend-do-handle
+"x-advatab-request-id": request-01
+"@signature-params": ("@method" "@path" "@query" "content-digest" "x-advatab-device-id" "x-advatab-vault-handle" "x-advatab-request-id");created=1700000000;expires=1700000300;keyid="device-first";alg="ecdsa-p256-sha256"
 ```
 
 The ECDSA signature itself is standard padded base64 inside
@@ -139,7 +139,7 @@ Approval uses one standard-base64 opaque serialized transfer payload:
 ```
 
 Polling and consumption send the secret only as
-`Authorization: SupaTabs-Pairing <polling-secret>`. The approved response
+`Authorization: AdvaTab-Pairing <polling-secret>`. The approved response
 contains `transferPayload`; `POST /v1/pairings/{id}/consume` is sent only after
 the extension has decrypted and installed it.
 

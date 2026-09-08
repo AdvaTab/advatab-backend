@@ -1,6 +1,6 @@
 # Geboom Sync Backend
 
-Phase 2 sync backend for SupaTabs Sync Protocol v1. A deployment owns one
+Phase 2 sync backend for AdvaTab Sync Protocol v1. A deployment owns one
 encrypted vault backed by one SQLite Durable Object. The service stores opaque
 ciphertext and device public keys; it never receives tab data or account
 encryption keys in plaintext. `customer-management` is the separate Phase 3
@@ -91,7 +91,7 @@ Useful checks:
 npm run typecheck
 npm run build
 npm run test:load
-SUPATABS_URL=http://127.0.0.1:8787 SUPATABS_SETUP_TOKEN=... npm run smoke
+ADVATAB_URL=http://127.0.0.1:8787 ADVATAB_SETUP_TOKEN=... npm run smoke
 ```
 
 The load test is intentionally separate from the normal test command. It writes 10,000 opaque records in 500-item batches and verifies a ten-page bootstrap.
@@ -145,8 +145,8 @@ npm run deploy:production
 The manual GitHub deployment workflow requires protected GitHub Environments named `staging` and `production`, each configured with:
 
 - secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`;
-- variable `SUPATABS_URL` containing the deployed Worker URL;
-- optional secret `SUPATABS_SETUP_TOKEN`, used only when smoke-testing a fresh deployment.
+- variable `ADVATAB_URL` containing the deployed Worker URL;
+- optional secret `ADVATAB_SETUP_TOKEN`, used only when smoke-testing a fresh deployment.
 
 The Cloudflare API token should be scoped to Workers Scripts edit access for the target account. Production is never deployed on push; it requires manual workflow dispatch and can be protected with GitHub reviewers.
 
@@ -162,7 +162,7 @@ The Cloudflare API token should be scoped to Workers Scripts edit access for the
 - `src/index.ts`: CORS, request limits, single-vault routing, safe request logging.
 - `src/vault.ts`: Durable Object routes, SQLite transactions, devices, envelopes, pairing, and sync persistence.
 - `src/sync-engine.ts`: portable CAS decisions, cursor rules, and response-size pagination.
-- `src/signatures.ts`: the documented RFC 9421 SupaTabs signature profile and a reusable WebCrypto signer.
+- `src/signatures.ts`: the documented RFC 9421 AdvaTab signature profile and a reusable WebCrypto signer.
 - `src/validation.ts` and `src/protocol.ts`: dependency-free wire validation and public TypeScript contracts.
 - `spec/phase2-wire-fixtures.md`: canonical cross-repository request, response, encoding, and signature fixtures.
 

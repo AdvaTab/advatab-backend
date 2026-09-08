@@ -5,7 +5,7 @@ import { createDevice, jsonRequest, responseJson, signedRequest } from './helper
 
 interface ErrorBody { error: { code: string } }
 
-describe('SupaTabs sync backend', () => {
+describe('AdvaTab sync backend', () => {
   it('runs the complete two-device lifecycle and survives eviction', async () => {
     const before = await exports.default.fetch('https://sync.test/v1/info');
     expect(before.status).toBe(200);
@@ -96,10 +96,10 @@ describe('SupaTabs sync backend', () => {
     expect(approveResponse.status).toBe(200);
     await approveResponse.text();
 
-    const poll = await exports.default.fetch(jsonRequest(`/v1/pairings/${pairing.pairingId}`, 'GET', undefined, { authorization: `SupaTabs-Pairing ${pairing.pollingSecret}` }));
+    const poll = await exports.default.fetch(jsonRequest(`/v1/pairings/${pairing.pairingId}`, 'GET', undefined, { authorization: `AdvaTab-Pairing ${pairing.pollingSecret}` }));
     expect(await responseJson<{ state: string; vaultHandle: string }>(poll)).toMatchObject({ state: 'approved', vaultHandle });
 
-    const consume = jsonRequest(`/v1/pairings/${pairing.pairingId}/consume`, 'POST', undefined, { authorization: `SupaTabs-Pairing ${pairing.pollingSecret}` });
+    const consume = jsonRequest(`/v1/pairings/${pairing.pairingId}/consume`, 'POST', undefined, { authorization: `AdvaTab-Pairing ${pairing.pollingSecret}` });
     expect((await exports.default.fetch(consume.clone() as unknown as RequestInfo)).status).toBe(204);
     expect((await exports.default.fetch(consume.clone() as unknown as RequestInfo)).status).toBe(204);
 
