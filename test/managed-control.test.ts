@@ -7,7 +7,7 @@ import type {
   SetEffectiveEntitlementRequest,
 } from '../src/managed-control';
 import { canonicalJson, effectiveAccessMode, immutableInputHash } from '../src/managed-control';
-import { createDevice } from './helpers';
+import { createDevice, jsonRequest, responseJson, signedRequest } from './helpers';
 
 function controlStub(): { id: DurableObjectId; raw: DurableObjectStub; stub: ManagedVaultControlRpc } {
   const id = env.VAULTS!.newUniqueId();
@@ -158,4 +158,36 @@ it('stores finite validity and accepts an indefinite replacement while rejecting
     invalidTimestampError = error;
   }
   expect(invalidTimestampError).toMatchObject({ message: expect.stringMatching(/ISO timestamp/) });
+});
+
+it('keeps pull, envelope listing, device listing, and revocation available in read-only mode', async () => {
+  const deviceA = await createDevice(`managed-read-only-a-${crypto.randomUUID()}`);
+  const deviceB = await createDevice(`managed-read-only-b-${crypto.randomUUID()}`);
+  const { raw, stub } = controlStub();
+  const initialized = await stub.initializeManagedVault({
+    operationId: crypto.randomUUID(),
+    vaultId: crypto.randomUUID(),
+    credential: { credentialId: 'credential-read-only', publicKey: 'cHVibGljLWtleQ', signCount: 0 },
+    device: { deviceId: deviceA.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: deviceA.publicKey },
+    effectiveEntitlement: { product: 'cloud-sync', tier: 'tester', mode: 'read_write', validUntil: null, version: 1 },
+  });
+  const pairing = await responseJson<{ pairingId: string; pollingSecret: string }>(await raw.fetch(jsonRequest('/v1/pairings', 'POST', {
+    protocolVersion: 1,
+    transferPublicKey: deviceB.publicKey,
+    device: { deviceId: deviceB.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: deviceB.publicKey },
+  })));
+  const approve = await signedRequest(`/v1/pairings/${pairing.pairingId}/approve`, 'POST', deviceA, initialized.vaultHandle, { transferPayload: 'd3JhcHBlZA==' });
+  expect((await raw.fetch(approve)).status).toBe(200);
+  await stub.setEffectiveEntitlement({
+    operationId: crypto.randomUUID(), product: 'cloud-sync', tier: 'tester', mode: 'read_only', validUntil: null, version: 2,
+  });
+
+  const listedDevices = await raw.fetch(await signedRequest('/v1/devices', 'GET', deviceA, initialized.vaultHandle));
+  expect(listedDevices.status).toBe(200);
+  expect((await responseJson<{ devices: Array<{ deviceId: string }> }>(listedDevices)).devices.map((entry) => entry.deviceId)).toEqual([deviceA.deviceId, deviceB.deviceId]);
+  const listedEnvelopes = await raw.fetch(await signedRequest('/v1/envelopes', 'GET', deviceA, initialized.vaultHandle));
+  expect(listedEnvelopes.status).toBe(200);
+  expect(await responseJson<{ envelopes: unknown[] }>(listedEnvelopes)).toEqual({ envelopes: [] });
+  const revoke = await raw.fetch(await signedRequest(`/v1/devices/${deviceB.deviceId}`, 'DELETE', deviceA, initialized.vaultHandle));
+  expect(revoke.status).toBe(204);
 });
