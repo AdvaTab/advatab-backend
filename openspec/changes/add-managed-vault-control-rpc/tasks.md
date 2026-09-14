@@ -28,5 +28,5 @@
 
 - [x] 5.1 Add a typed external-namespace contract fixture consumable by customer-management.
 - [x] 5.2 Run regression tests proving every existing Phase 2 endpoint, signature profile, payload, and BYO behavior is unchanged.
-- [ ] 5.3 Document backend-first deployment, the backend-owned namespace/migration boundary, observability, and rollback procedure.
+- [x] 5.3 Document backend-first deployment, the backend-owned namespace/migration boundary, observability, and rollback procedure.
 - [ ] 5.4 Run backend tests and strict OpenSpec validation before customer-management staging integration.

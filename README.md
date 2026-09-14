@@ -142,6 +142,32 @@ npm run deploy:staging
 npm run deploy:production
 ```
 
+### Managed control RPC deployment
+
+Deploy the backend before enabling the customer-management external namespace
+binding. The backend Worker owns `VaultDurableObject`, its SQLite migrations,
+the `VAULTS` namespace, and the typed `initializeManagedVault` and
+`setEffectiveEntitlement` RPCs. Customer-management must bind to this class
+with `script_name` and must not declare a local class, migration, or copied
+data-plane implementation. Use the matching backend script name for each
+environment (`geboom-sync-staging` or `geboom-sync-production`) and the
+checked-in `spec/managed-vault-control-rpc-fixture.ts` as the contract.
+
+Observe deployments with `npx wrangler tail --env staging` or the Workers
+dashboard. Existing structured `request` and `vault_error` events cover the
+Phase 2 data plane; control-plane callers should record the operation ID,
+RPC method, result status, entitlement version, and latency without logging
+credential key material, device private keys, recovery material, or plaintext
+records. A failed or timed-out RPC is safe to retry with the same operation
+ID.
+
+To roll back, disable customer-management onboarding and managed gateway
+traffic first, then deploy a known backend revision. Durable Object migrations
+are forward-only: leave the managed-control tables and initialized objects in
+place, and never delete or recycle reserved handles. Re-enable the gateway
+only after the backend RPC and Phase 2 regression checks pass in the target
+environment.
+
 The manual GitHub deployment workflow requires protected GitHub Environments named `staging` and `production`, each configured with:
 
 - secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`;
