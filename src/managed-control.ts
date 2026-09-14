@@ -1,6 +1,63 @@
 import { sha256Base64Url, utf8 } from './encoding';
+import type { AUTH_ALGORITHM } from './protocol';
 
 export type ManagedControlMethod = 'initializeManagedVault' | 'setEffectiveEntitlement';
+
+export type ManagedAccessMode = 'read_write' | 'read_only';
+export type ManagedTier = 'tester' | 'pro' | null;
+
+export interface ManagedCredential {
+  credentialId: string;
+  publicKey: string;
+  signCount: number;
+}
+
+export interface ManagedDevice {
+  deviceId: string;
+  authAlgorithm: typeof AUTH_ALGORITHM;
+  authPublicKey: string;
+}
+
+export interface EffectiveEntitlement {
+  product: string;
+  tier: ManagedTier;
+  mode: ManagedAccessMode;
+  validUntil: string | null;
+  version: number;
+}
+
+export interface InitializeManagedVaultRequest {
+  operationId: string;
+  vaultId: string;
+  credential: ManagedCredential;
+  device: ManagedDevice;
+  effectiveEntitlement: EffectiveEntitlement;
+}
+
+export interface InitializeManagedVaultResult {
+  status: 'initialized';
+  vaultHandle: string;
+  entitlementVersion: number;
+}
+
+export interface SetEffectiveEntitlementRequest {
+  operationId: string;
+  product: string;
+  tier: ManagedTier;
+  mode: ManagedAccessMode;
+  validUntil: string | null;
+  version: number;
+}
+
+export interface SetEffectiveEntitlementResult {
+  applied: boolean;
+  entitlementVersion: number;
+}
+
+export interface ManagedVaultControlRpc {
+  initializeManagedVault(input: InitializeManagedVaultRequest): Promise<InitializeManagedVaultResult>;
+  setEffectiveEntitlement(input: SetEffectiveEntitlementRequest): Promise<SetEffectiveEntitlementResult>;
+}
 
 export interface ControlOperationRow {
   operation_id: string;
