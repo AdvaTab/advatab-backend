@@ -6,7 +6,7 @@ import type {
   ManagedVaultControlRpc,
   SetEffectiveEntitlementRequest,
 } from '../src/managed-control';
-import { canonicalJson, immutableInputHash } from '../src/managed-control';
+import { canonicalJson, effectiveAccessMode, immutableInputHash } from '../src/managed-control';
 import { createDevice } from './helpers';
 
 function controlStub(): { id: DurableObjectId; raw: DurableObjectStub; stub: ManagedVaultControlRpc } {
@@ -91,6 +91,13 @@ it('serializes identical concurrent initialization calls and hashes finite canon
     { status: 'initialized', vaultHandle: id.toString(), entitlementVersion: 1 },
     { status: 'initialized', vaultHandle: id.toString(), entitlementVersion: 1 },
   ]);
+});
+
+it('fails closed to read-only when finite effective validity has passed', () => {
+  const now = Date.parse('2030-01-01T00:00:00.000Z');
+  expect(effectiveAccessMode('read_write', '2029-12-31T23:59:59.999Z', now)).toBe('read_only');
+  expect(effectiveAccessMode('read_write', '2030-01-01T00:00:00.001Z', now)).toBe('read_write');
+  expect(effectiveAccessMode('read_write', null, now)).toBe('read_write');
 });
 
 it('applies monotonic effective-entitlement updates and rejects equal-version conflicts', async () => {

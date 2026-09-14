@@ -59,6 +59,10 @@ export interface ManagedVaultControlRpc {
   setEffectiveEntitlement(input: SetEffectiveEntitlementRequest): Promise<SetEffectiveEntitlementResult>;
 }
 
+export function effectiveAccessMode(mode: ManagedAccessMode, validUntil: string | null, now = Date.now()): ManagedAccessMode {
+  return validUntil !== null && Date.parse(validUntil) <= now ? 'read_only' : mode;
+}
+
 export interface ControlOperationRow {
   operation_id: string;
   method: ManagedControlMethod;

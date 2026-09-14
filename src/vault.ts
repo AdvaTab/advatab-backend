@@ -17,6 +17,7 @@ import type { RuntimeEnv } from './env';
 import { assertCursor, assertPageProgress, changeFits, decideMutation, jsonByteLength } from './sync-engine';
 import {
   getControlOperation,
+  effectiveAccessMode,
   immutableInputHash,
   ManagedControlConflictError,
   storeControlOperation,
@@ -247,9 +248,15 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
     if (input.tier !== null && input.tier !== 'tester' && input.tier !== 'pro') throw new Error('Managed entitlement tier is invalid.');
     if (input.mode !== 'read_write' && input.mode !== 'read_only') throw new Error('Managed entitlement mode is invalid.');
     if (!Number.isSafeInteger(input.version) || input.version < 0) throw new Error('Managed entitlement version is invalid.');
-    if (input.validUntil !== null && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(input.validUntil) || !Number.isFinite(Date.parse(input.validUntil)))) {
+    if (input.validUntil !== null && !this.isValidManagedTimestamp(input.validUntil)) {
       throw new Error('Managed entitlement validUntil must be an ISO timestamp or null.');
     }
+  }
+
+  private isValidManagedTimestamp(value: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) return false;
+    const canonical = value.includes('.') ? value : value.replace('Z', '.000Z');
+    return Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === canonical;
   }
 
   private migrate(): void {
@@ -401,6 +408,24 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
 
   private meta(): MetaRow {
     return getOne<MetaRow>(this.sql, 'SELECT * FROM vault_meta WHERE singleton = 1') as MetaRow;
+  }
+
+  private managedAccess(): { mode: 'read_write' | 'read_only'; tier: 'tester' | 'pro' | null; validUntil: string | null; version: number } | null {
+    if (!getOne<ManagedVaultMetaRow>(this.sql, 'SELECT * FROM managed_vault_meta WHERE singleton = 1')) return null;
+    const entitlement = getOne<ManagedEntitlementRow>(this.sql, 'SELECT * FROM managed_effective_entitlements WHERE product = ?', 'cloud-sync');
+    if (!entitlement) return { mode: 'read_only', tier: null, validUntil: null, version: 0 };
+    return {
+      mode: effectiveAccessMode(entitlement.mode, entitlement.valid_until),
+      tier: entitlement.tier,
+      validUntil: entitlement.valid_until,
+      version: entitlement.version,
+    };
+  }
+
+  private assertManagedWriteAllowed(): void {
+    if (this.managedAccess()?.mode === 'read_only') {
+      throw new ApiError('managed_read_only', 'Managed cloud access is read-only.', 403);
+    }
   }
 
   private assertSetup(): MetaRow {
