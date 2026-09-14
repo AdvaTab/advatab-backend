@@ -14,7 +14,7 @@
 ## 3. Effective entitlement RPC
 
 - [x] 3.1 Implement `setEffectiveEntitlement` with higher-version apply, lower-version ignore, and equal-version identical-payload rules.
-- [ ] 3.2 Persist only product, tier, mode, validity, and version; verify no invite, billing, or entitlement-history fields enter the DO.
+- [x] 3.2 Persist only product, tier, mode, validity, and version; verify no invite, billing, or entitlement-history fields enter the DO.
 - [ ] 3.3 Add tests for out-of-order updates, equal-version conflicts, indefinite validity, and local finite expiry.
 
 ## 4. Data-plane enforcement

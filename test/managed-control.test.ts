@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { evictDurableObject } from 'cloudflare:test';
+import { evictDurableObject, runInDurableObject } from 'cloudflare:test';
 import { expect, it } from 'vitest';
 import type {
   InitializeManagedVaultRequest,
@@ -9,14 +9,15 @@ import type {
 import { canonicalJson, immutableInputHash } from '../src/managed-control';
 import { createDevice } from './helpers';
 
-function controlStub(): { id: DurableObjectId; stub: ManagedVaultControlRpc } {
+function controlStub(): { id: DurableObjectId; raw: DurableObjectStub; stub: ManagedVaultControlRpc } {
   const id = env.VAULTS!.newUniqueId();
-  return { id, stub: env.VAULTS!.get(id) as unknown as ManagedVaultControlRpc };
+  const raw = env.VAULTS!.get(id);
+  return { id, raw, stub: raw as unknown as ManagedVaultControlRpc };
 }
 
 it('persists managed initialization and returns the stored result after eviction', async () => {
   const device = await createDevice(`managed-device-${crypto.randomUUID()}`);
-  const { id, stub } = controlStub();
+  const { id, raw, stub } = controlStub();
   const input: InitializeManagedVaultRequest = {
     operationId: crypto.randomUUID(),
     vaultId: crypto.randomUUID(),
@@ -27,6 +28,11 @@ it('persists managed initialization and returns the stored result after eviction
 
   const first = await stub.initializeManagedVault(input);
   expect(first).toEqual({ status: 'initialized', vaultHandle: id.toString(), entitlementVersion: 1 });
+
+  const rows = await runInDurableObject(raw, (_instance, state) => state.storage.sql.exec('SELECT * FROM managed_effective_entitlements').toArray());
+  expect(rows).toHaveLength(1);
+  expect(Object.keys(rows[0] as object).sort()).toEqual(['mode', 'product', 'tier', 'updated_at', 'valid_until', 'version']);
+  expect(rows[0]).toMatchObject({ product: 'cloud-sync', tier: 'tester', mode: 'read_write', valid_until: null, version: 1 });
 
   await evictDurableObject(stub as unknown as DurableObjectStub);
   const retry = await (env.VAULTS!.get(id) as unknown as ManagedVaultControlRpc).initializeManagedVault(input);
