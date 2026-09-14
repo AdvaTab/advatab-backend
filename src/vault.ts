@@ -488,6 +488,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
 
   private async enrollRecoveryDevice(request: Request, body: Uint8Array): Promise<Response> {
     if (!this.env.RECOVERY_TOKEN) throw new ApiError('recovery_unavailable', 'Recovery enrollment is not configured for this deployment.', 503);
+    this.assertManagedWriteAllowed();
     const authorization = request.headers.get('authorization');
     const supplied = authorization?.startsWith('Bearer ') ? authorization.slice(7) : '';
     if (!supplied || !constantTimeEqual(supplied, this.env.RECOVERY_TOKEN)) {
@@ -565,6 +566,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
 
   private async sync(device: DeviceRow, body: Uint8Array): Promise<Response> {
     const input = parseSync(await readJson(body), this.limits);
+    if (input.mutations.length > 0) this.assertManagedWriteAllowed();
     const digest = await sha256Base64(body);
     const responseJson = this.ctx.storage.transactionSync(() => {
       const stored = getOne<{ request_digest: string; response_json: string }>(
@@ -715,6 +717,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private async putEnvelope(deviceId: string, envelopeId: string, body: Uint8Array): Promise<Response> {
+    this.assertManagedWriteAllowed();
     const input = parseEnvelope(await readJson(body), this.limits);
     const timestamp = nowIso();
     this.sql.exec(
@@ -736,6 +739,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private deleteEnvelope(deviceId: string, envelopeId: string): Response {
+    this.assertManagedWriteAllowed();
     this.sql.exec('DELETE FROM key_envelopes WHERE envelope_id = ?', envelopeId);
     this.touch(deviceId);
     return new Response(null, { status: 204 });
@@ -751,6 +755,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
 
   private async createPairing(request: Request, body: Uint8Array): Promise<Response> {
     this.assertSetup();
+    this.assertManagedWriteAllowed();
     const input = parsePairingCreate(await readJson(body), this.limits);
     await this.validateDevicePublicKey(input.device);
     const source = request.headers.get('x-advatab-internal-source') || 'local';
@@ -802,6 +807,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private listPendingPairings(deviceId: string): Response {
+    this.assertManagedWriteAllowed();
     this.expirePairings();
     this.touch(deviceId);
     const pairings = rows<PairingRow>(this.sql, `SELECT * FROM pairings WHERE state = 'pending' AND expires_at > ? ORDER BY created_at`, nowIso()).map((row) => ({
@@ -821,6 +827,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private async approvePairing(actorId: string, pairingId: string, body: Uint8Array): Promise<Response> {
+    this.assertManagedWriteAllowed();
     const input = parsePairingApprove(await readJson(body), this.limits);
     const digest = await sha256Base64(body);
     const result = this.ctx.storage.transactionSync(() => {
@@ -865,6 +872,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private async pollPairing(request: Request, pairingId: string): Promise<Response> {
+    this.assertManagedWriteAllowed();
     const pairing = await this.authorizedPairing(request, pairingId);
     return json({
       pairingId,
@@ -876,6 +884,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private async consumePairing(request: Request, pairingId: string): Promise<Response> {
+    this.assertManagedWriteAllowed();
     const pairing = await this.authorizedPairing(request, pairingId);
     if (pairing.state === 'consumed') return new Response(null, { status: 204 });
     if (pairing.state !== 'approved') throw new ApiError('invalid_pairing_state', `Pairing is ${pairing.state}.`, 409);

@@ -190,4 +190,28 @@ it('keeps pull, envelope listing, device listing, and revocation available in re
   expect(await responseJson<{ envelopes: unknown[] }>(listedEnvelopes)).toEqual({ envelopes: [] });
   const revoke = await raw.fetch(await signedRequest(`/v1/devices/${deviceB.deviceId}`, 'DELETE', deviceA, initialized.vaultHandle));
   expect(revoke.status).toBe(204);
+
+  const mutation = await raw.fetch(await signedRequest('/v1/sync', 'POST', deviceA, initialized.vaultHandle, {
+    protocolVersion: 1, syncRequestId: crypto.randomUUID(), cursor: 0,
+    mutations: [{ itemId: 'read-only-item', expectedRevision: 0, deleted: false, cryptoVersion: 1, nonce: 'AA==', ciphertext: 'AQ==' }],
+  }));
+  expect(mutation.status).toBe(403);
+  expect(await responseJson<{ error: { code: string } }>(mutation)).toMatchObject({ error: { code: 'managed_read_only' } });
+  const envelopeWrite = await raw.fetch(await signedRequest('/v1/envelopes/recovery', 'PUT', deviceA, initialized.vaultHandle, {
+    type: 'recovery-v1', credentialRef: null, cryptoVersion: 1, nonce: null, ciphertext: 'ZW52ZWxvcGU=',
+  }));
+  expect(envelopeWrite.status).toBe(403);
+  const envelopeDelete = await raw.fetch(await signedRequest('/v1/envelopes/recovery', 'DELETE', deviceA, initialized.vaultHandle));
+  expect(envelopeDelete.status).toBe(403);
+  const pairingCreate = await raw.fetch(jsonRequest('/v1/pairings', 'POST', {
+    protocolVersion: 1, transferPublicKey: deviceB.publicKey,
+    device: { deviceId: `blocked-${deviceB.deviceId}`, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: deviceB.publicKey },
+  }));
+  expect(pairingCreate.status).toBe(403);
+  const pendingPairings = await raw.fetch(await signedRequest('/v1/pairings/pending', 'GET', deviceA, initialized.vaultHandle));
+  expect(pendingPairings.status).toBe(403);
+  const pairingPoll = await raw.fetch(jsonRequest(`/v1/pairings/${pairing.pairingId}`, 'GET', undefined, { authorization: `AdvaTab-Pairing ${pairing.pollingSecret}` }));
+  expect(pairingPoll.status).toBe(403);
+  const pairingConsume = await raw.fetch(jsonRequest(`/v1/pairings/${pairing.pairingId}/consume`, 'POST', undefined, { authorization: `AdvaTab-Pairing ${pairing.pollingSecret}` }));
+  expect(pairingConsume.status).toBe(403);
 });

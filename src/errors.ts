@@ -15,6 +15,7 @@ export type ErrorCode =
   | 'last_active_device'
   | 'invalid_pairing_state'
   | 'recovery_unavailable'
+  | 'managed_read_only'
   | 'not_found'
   | 'internal_error';
 
