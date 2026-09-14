@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 import type {
   InitializeManagedVaultRequest,
   ManagedVaultControlRpc,
+  SetEffectiveEntitlementRequest,
 } from '../src/managed-control';
 import { canonicalJson, immutableInputHash } from '../src/managed-control';
 import { createDevice } from './helpers';
@@ -84,4 +85,35 @@ it('serializes identical concurrent initialization calls and hashes finite canon
     { status: 'initialized', vaultHandle: id.toString(), entitlementVersion: 1 },
     { status: 'initialized', vaultHandle: id.toString(), entitlementVersion: 1 },
   ]);
+});
+
+it('applies monotonic effective-entitlement updates and rejects equal-version conflicts', async () => {
+  const device = await createDevice(`managed-entitlement-device-${crypto.randomUUID()}`);
+  const { stub } = controlStub();
+  const initialization: InitializeManagedVaultRequest = {
+    operationId: crypto.randomUUID(),
+    vaultId: crypto.randomUUID(),
+    credential: { credentialId: 'credential-entitlement', publicKey: 'cHVibGljLWtleQ', signCount: 0 },
+    device: { deviceId: device.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: device.publicKey },
+    effectiveEntitlement: { product: 'cloud-sync', tier: 'tester', mode: 'read_write', validUntil: null, version: 1 },
+  };
+  await stub.initializeManagedVault(initialization);
+
+  const newer: SetEffectiveEntitlementRequest = {
+    operationId: crypto.randomUUID(), product: 'cloud-sync', tier: 'pro', mode: 'read_write', validUntil: null, version: 2,
+  };
+  expect(await stub.setEffectiveEntitlement(newer)).toEqual({ applied: true, entitlementVersion: 2 });
+  expect(await stub.setEffectiveEntitlement({
+    operationId: crypto.randomUUID(), product: 'cloud-sync', tier: 'tester', mode: 'read_only', validUntil: null, version: 1,
+  })).toEqual({ applied: false, entitlementVersion: 2 });
+  expect(await stub.setEffectiveEntitlement({ ...newer, operationId: crypto.randomUUID() })).toEqual({ applied: false, entitlementVersion: 2 });
+
+  let equalVersionError: unknown;
+  try {
+    await stub.setEffectiveEntitlement({ ...newer, operationId: crypto.randomUUID(), mode: 'read_only' });
+  } catch (error) {
+    equalVersionError = error;
+  }
+  expect(equalVersionError).toMatchObject({ message: expect.stringMatching(/already associated/) });
+  expect(await stub.setEffectiveEntitlement(newer)).toEqual({ applied: true, entitlementVersion: 2 });
 });
