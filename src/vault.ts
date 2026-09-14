@@ -183,7 +183,31 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
         request_count INTEGER NOT NULL,
         PRIMARY KEY(source_hash, bucket_start)
       );
+      CREATE TABLE IF NOT EXISTS managed_vault_meta (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        vault_id TEXT NOT NULL UNIQUE,
+        credential_id TEXT NOT NULL,
+        credential_public_key TEXT NOT NULL,
+        credential_sign_count INTEGER NOT NULL DEFAULT 0,
+        initialized_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS managed_effective_entitlements (
+        product TEXT PRIMARY KEY,
+        tier TEXT CHECK (tier IS NULL OR tier IN ('tester', 'pro')),
+        mode TEXT NOT NULL CHECK (mode IN ('read_write', 'read_only')),
+        valid_until TEXT,
+        version INTEGER NOT NULL CHECK (version >= 0),
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS managed_control_operations (
+        operation_id TEXT PRIMARY KEY,
+        method TEXT NOT NULL,
+        input_hash TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, datetime('now'));
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, datetime('now'));
     `);
     const meta = getOne<MetaRow>(this.sql, 'SELECT * FROM vault_meta WHERE singleton = 1');
     if (!meta) {

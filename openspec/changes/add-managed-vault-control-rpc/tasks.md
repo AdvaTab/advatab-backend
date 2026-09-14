@@ -1,6 +1,6 @@
 ## 1. Durable Object persistence
 
-- [ ] 1.1 Add a Durable Object SQLite migration for managed initialization metadata, effective entitlements, and control-operation results.
+- [x] 1.1 Add a Durable Object SQLite migration for managed initialization metadata, effective entitlements, and control-operation results.
 - [ ] 1.2 Add canonical immutable-input hashing and conflict-safe operation-result lookup shared by both RPC methods.
 - [ ] 1.3 Define and export typed request/result models for `initializeManagedVault` and `setEffectiveEntitlement`.
 
