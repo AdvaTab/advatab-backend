@@ -22,7 +22,7 @@
 - [x] 4.1 Centralize effective access evaluation so expired finite grants behave as `read_only` without D1.
 - [x] 4.2 Permit pull, encrypted export, device listing, and security-reducing revocation in `read_only` mode.
 - [x] 4.3 Reject sync mutations, envelope writes, pairing, device additions, and other access-increasing operations atomically in `read_only` mode.
-- [ ] 4.4 Add operation-matrix tests for `read_write`, explicit `read_only`, and locally expired states.
+- [x] 4.4 Add operation-matrix tests for `read_write`, explicit `read_only`, and locally expired states.
 
 ## 5. Compatibility and deployment
 

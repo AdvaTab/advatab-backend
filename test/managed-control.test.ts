@@ -215,3 +215,44 @@ it('keeps pull, envelope listing, device listing, and revocation available in re
   const pairingConsume = await raw.fetch(jsonRequest(`/v1/pairings/${pairing.pairingId}/consume`, 'POST', undefined, { authorization: `AdvaTab-Pairing ${pairing.pollingSecret}` }));
   expect(pairingConsume.status).toBe(403);
 });
+
+it('applies the read-write/read-only/expired operation matrix', async () => {
+  const device = await createDevice(`managed-matrix-device-${crypto.randomUUID()}`);
+  const { raw, stub } = controlStub();
+  const initialized = await stub.initializeManagedVault({
+    operationId: crypto.randomUUID(),
+    vaultId: crypto.randomUUID(),
+    credential: { credentialId: 'credential-matrix', publicKey: 'cHVibGljLWtleQ', signCount: 0 },
+    device: { deviceId: device.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: device.publicKey },
+    effectiveEntitlement: { product: 'cloud-sync', tier: 'tester', mode: 'read_write', validUntil: null, version: 1 },
+  });
+  const readWriteMutation = await raw.fetch(await signedRequest('/v1/sync', 'POST', device, initialized.vaultHandle, {
+    protocolVersion: 1, syncRequestId: crypto.randomUUID(), cursor: 0,
+    mutations: [{ itemId: 'matrix-item', expectedRevision: 0, deleted: false, cryptoVersion: 1, nonce: 'AA==', ciphertext: 'AQ==' }],
+  }));
+  expect(readWriteMutation.status).toBe(200);
+
+  await stub.setEffectiveEntitlement({
+    operationId: crypto.randomUUID(), product: 'cloud-sync', tier: 'tester', mode: 'read_only', validUntil: null, version: 2,
+  });
+  const explicitReadOnly = await raw.fetch(await signedRequest('/v1/sync', 'POST', device, initialized.vaultHandle, {
+    protocolVersion: 1, syncRequestId: crypto.randomUUID(), cursor: 1,
+    mutations: [{ itemId: 'matrix-item-2', expectedRevision: 0, deleted: true }],
+  }));
+  expect(explicitReadOnly.status).toBe(403);
+
+  const expiredDevice = await createDevice(`managed-expired-device-${crypto.randomUUID()}`);
+  const expiredControl = controlStub();
+  const expired = await expiredControl.stub.initializeManagedVault({
+    operationId: crypto.randomUUID(),
+    vaultId: crypto.randomUUID(),
+    credential: { credentialId: 'credential-expired', publicKey: 'cHVibGljLWtleQ', signCount: 0 },
+    device: { deviceId: expiredDevice.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: expiredDevice.publicKey },
+    effectiveEntitlement: { product: 'cloud-sync', tier: 'tester', mode: 'read_write', validUntil: '2000-01-01T00:00:00.000Z', version: 1 },
+  });
+  const expiredMutation = await expiredControl.raw.fetch(await signedRequest('/v1/sync', 'POST', expiredDevice, expired.vaultHandle, {
+    protocolVersion: 1, syncRequestId: crypto.randomUUID(), cursor: 0,
+    mutations: [{ itemId: 'expired-item', expectedRevision: 0, deleted: true }],
+  }));
+  expect(expiredMutation.status).toBe(403);
+});
