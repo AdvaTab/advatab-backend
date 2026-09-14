@@ -247,7 +247,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
     if (input.tier !== null && input.tier !== 'tester' && input.tier !== 'pro') throw new Error('Managed entitlement tier is invalid.');
     if (input.mode !== 'read_write' && input.mode !== 'read_only') throw new Error('Managed entitlement mode is invalid.');
     if (!Number.isSafeInteger(input.version) || input.version < 0) throw new Error('Managed entitlement version is invalid.');
-    if (input.validUntil !== null && (!Number.isFinite(Date.parse(input.validUntil)) || Number.isNaN(Date.parse(input.validUntil)))) {
+    if (input.validUntil !== null && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(input.validUntil) || !Number.isFinite(Date.parse(input.validUntil)))) {
       throw new Error('Managed entitlement validUntil must be an ISO timestamp or null.');
     }
   }

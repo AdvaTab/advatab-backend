@@ -123,3 +123,32 @@ it('applies monotonic effective-entitlement updates and rejects equal-version co
   expect(equalVersionError).toMatchObject({ message: expect.stringMatching(/already associated/) });
   expect(await stub.setEffectiveEntitlement(newer)).toEqual({ applied: true, entitlementVersion: 2 });
 });
+
+it('stores finite validity and accepts an indefinite replacement while rejecting non-RFC3339 timestamps', async () => {
+  const device = await createDevice(`managed-validity-device-${crypto.randomUUID()}`);
+  const { stub } = controlStub();
+  await stub.initializeManagedVault({
+    operationId: crypto.randomUUID(),
+    vaultId: crypto.randomUUID(),
+    credential: { credentialId: 'credential-validity', publicKey: 'cHVibGljLWtleQ', signCount: 0 },
+    device: { deviceId: device.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: device.publicKey },
+    effectiveEntitlement: { product: 'cloud-sync', tier: 'tester', mode: 'read_write', validUntil: null, version: 1 },
+  });
+  expect(await stub.setEffectiveEntitlement({
+    operationId: crypto.randomUUID(), product: 'cloud-sync', tier: 'tester', mode: 'read_write',
+    validUntil: '2030-01-01T00:00:00.000Z', version: 2,
+  })).toEqual({ applied: true, entitlementVersion: 2 });
+  expect(await stub.setEffectiveEntitlement({
+    operationId: crypto.randomUUID(), product: 'cloud-sync', tier: 'tester', mode: 'read_write', validUntil: null, version: 3,
+  })).toEqual({ applied: true, entitlementVersion: 3 });
+
+  let invalidTimestampError: unknown;
+  try {
+    await stub.setEffectiveEntitlement({
+      operationId: crypto.randomUUID(), product: 'cloud-sync', tier: 'tester', mode: 'read_write', validUntil: 'tomorrow', version: 4,
+    });
+  } catch (error) {
+    invalidTimestampError = error;
+  }
+  expect(invalidTimestampError).toMatchObject({ message: expect.stringMatching(/ISO timestamp/) });
+});
