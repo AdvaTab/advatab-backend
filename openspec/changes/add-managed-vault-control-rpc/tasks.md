@@ -8,7 +8,7 @@
 
 - [x] 2.1 Implement `initializeManagedVault` on the existing `VaultDurableObject` without adding a second DO class.
 - [x] 2.2 Atomically persist the vault identity, first verified credential, first DeviceAuth public key, initial effective entitlement, and stored RPC result.
-- [ ] 2.3 Return the object’s own `ctx.id` handle and reject reinitialization with different permanent identity inputs.
+- [x] 2.3 Return the object’s own `ctx.id` handle and reject reinitialization with different permanent identity inputs.
 - [ ] 2.4 Add identical-retry, lost-response, concurrent-call, and changed-input conflict tests.
 
 ## 3. Effective entitlement RPC
