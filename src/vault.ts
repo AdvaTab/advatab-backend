@@ -15,6 +15,17 @@ import { DEVICE_HEADER, REQUEST_HEADER, verifySignedRequest } from './signatures
 import { parseBootstrap, parseEnvelope, parseId, parsePairingApprove, parsePairingCreate, parseSync } from './validation';
 import type { RuntimeEnv } from './env';
 import { assertCursor, assertPageProgress, changeFits, decideMutation, jsonByteLength } from './sync-engine';
+import {
+  getControlOperation,
+  immutableInputHash,
+  ManagedControlConflictError,
+  storeControlOperation,
+  type EffectiveEntitlement,
+  type InitializeManagedVaultRequest,
+  type InitializeManagedVaultResult,
+  type SetEffectiveEntitlementRequest,
+  type SetEffectiveEntitlementResult,
+} from './managed-control';
 
 type Sql = DurableObjectState['storage']['sql'];
 
@@ -62,6 +73,23 @@ interface PairingRow {
   expires_at: string;
 }
 
+interface ManagedVaultMetaRow {
+  vault_id: string;
+  credential_id: string;
+  credential_public_key: string;
+  credential_sign_count: number;
+  initialized_at: string;
+}
+
+interface ManagedEntitlementRow {
+  product: string;
+  tier: 'tester' | 'pro' | null;
+  mode: 'read_write' | 'read_only';
+  valid_until: string | null;
+  version: number;
+  updated_at: string;
+}
+
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' };
 const nowIso = (): string => new Date().toISOString();
 const bytes = (value: ArrayBuffer): Uint8Array<ArrayBuffer> => new Uint8Array(value);
@@ -107,6 +135,121 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
     this.sql = ctx.storage.sql;
     this.limits = getLimits(env);
     ctx.blockConcurrencyWhile(async () => ctx.storage.transactionSync(() => this.migrate()));
+  }
+
+  async initializeManagedVault(input: InitializeManagedVaultRequest): Promise<InitializeManagedVaultResult> {
+    this.assertManagedInitializationInput(input);
+    await this.validateDevicePublicKey(input.device);
+    const inputHash = await immutableInputHash({
+      operationId: input.operationId,
+      vaultId: input.vaultId,
+      credential: input.credential,
+      device: input.device,
+      effectiveEntitlement: input.effectiveEntitlement,
+    });
+    return this.ctx.storage.transactionSync(() => {
+      const stored = getControlOperation<InitializeManagedVaultResult>(this.sql, input.operationId, 'initializeManagedVault', inputHash);
+      if (stored) return stored;
+      if (getOne<ManagedVaultMetaRow>(this.sql, 'SELECT * FROM managed_vault_meta WHERE singleton = 1')) {
+        throw new ManagedControlConflictError('This Durable Object has already been initialized as a managed vault.');
+      }
+      const meta = this.meta();
+      if (meta.vault_id || meta.bootstrap_completed_at) {
+        throw new ManagedControlConflictError('This Durable Object already contains a Phase 2 vault identity.');
+      }
+      const timestamp = nowIso();
+      this.sql.exec(
+        'INSERT INTO managed_vault_meta(singleton, vault_id, credential_id, credential_public_key, credential_sign_count, initialized_at) VALUES (1, ?, ?, ?, ?, ?)',
+        input.vaultId,
+        input.credential.credentialId,
+        input.credential.publicKey,
+        input.credential.signCount,
+        timestamp,
+      );
+      this.insertDevice({
+        deviceId: input.device.deviceId,
+        authAlgorithm: input.device.authAlgorithm,
+        authPublicKey: input.device.authPublicKey,
+      }, timestamp);
+      this.sql.exec('UPDATE vault_meta SET vault_id = ?, bootstrap_completed_at = ? WHERE singleton = 1', input.vaultId, timestamp);
+      this.sql.exec(
+        'INSERT INTO managed_effective_entitlements(product, tier, mode, valid_until, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        input.effectiveEntitlement.product,
+        input.effectiveEntitlement.tier,
+        input.effectiveEntitlement.mode,
+        input.effectiveEntitlement.validUntil,
+        input.effectiveEntitlement.version,
+        timestamp,
+      );
+      const result: InitializeManagedVaultResult = {
+        status: 'initialized',
+        vaultHandle: this.ctx.id.toString(),
+        entitlementVersion: input.effectiveEntitlement.version,
+      };
+      storeControlOperation(this.sql, input.operationId, 'initializeManagedVault', inputHash, result, timestamp);
+      return result;
+    });
+  }
+
+  async setEffectiveEntitlement(input: SetEffectiveEntitlementRequest): Promise<SetEffectiveEntitlementResult> {
+    this.assertEffectiveEntitlementInput(input);
+    const inputHash = await immutableInputHash(input);
+    return this.ctx.storage.transactionSync(() => {
+      const stored = getControlOperation<SetEffectiveEntitlementResult>(this.sql, input.operationId, 'setEffectiveEntitlement', inputHash);
+      if (stored) return stored;
+      if (!getOne<ManagedVaultMetaRow>(this.sql, 'SELECT * FROM managed_vault_meta WHERE singleton = 1')) {
+        throw new ManagedControlConflictError('Effective entitlements require a managed vault initialization.');
+      }
+      const current = getOne<ManagedEntitlementRow>(this.sql, 'SELECT * FROM managed_effective_entitlements WHERE product = ?', input.product);
+      const timestamp = nowIso();
+      let result: SetEffectiveEntitlementResult;
+      if (current && input.version < current.version) {
+        result = { applied: false, entitlementVersion: current.version };
+      } else if (current && input.version === current.version) {
+        if (current.tier !== input.tier || current.mode !== input.mode || current.valid_until !== input.validUntil) {
+          throw new ManagedControlConflictError('The effective entitlement version is already associated with different state.');
+        }
+        result = { applied: false, entitlementVersion: current.version };
+      } else {
+        this.sql.exec(
+          `INSERT INTO managed_effective_entitlements(product, tier, mode, valid_until, version, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(product) DO UPDATE SET tier = excluded.tier, mode = excluded.mode,
+             valid_until = excluded.valid_until, version = excluded.version, updated_at = excluded.updated_at`,
+          input.product,
+          input.tier,
+          input.mode,
+          input.validUntil,
+          input.version,
+          timestamp,
+        );
+        result = { applied: true, entitlementVersion: input.version };
+      }
+      storeControlOperation(this.sql, input.operationId, 'setEffectiveEntitlement', inputHash, result, timestamp);
+      return result;
+    });
+  }
+
+  private assertManagedInitializationInput(input: InitializeManagedVaultRequest): void {
+    if (!input.operationId || !input.vaultId) throw new Error('Managed initialization requires operationId and vaultId.');
+    if (!input.credential.credentialId || !input.credential.publicKey || !Number.isSafeInteger(input.credential.signCount) || input.credential.signCount < 0) {
+      throw new Error('Managed initialization requires valid public credential material.');
+    }
+    if (!input.device.deviceId || input.device.authAlgorithm !== AUTH_ALGORITHM || !input.device.authPublicKey) {
+      throw new Error('Managed initialization requires a valid first device identity.');
+    }
+    this.assertEffectiveEntitlementInput(input.effectiveEntitlement);
+  }
+
+  private assertEffectiveEntitlementInput(input: EffectiveEntitlement | SetEffectiveEntitlementRequest): void {
+    if ('operationId' in input && !input.operationId) throw new Error('Managed entitlement requires operationId.');
+    if (!input.product || input.product !== 'cloud-sync') throw new Error('Managed entitlement requires the cloud-sync product.');
+    if (input.tier !== null && input.tier !== 'tester' && input.tier !== 'pro') throw new Error('Managed entitlement tier is invalid.');
+    if (input.mode !== 'read_write' && input.mode !== 'read_only') throw new Error('Managed entitlement mode is invalid.');
+    if (!Number.isSafeInteger(input.version) || input.version < 0) throw new Error('Managed entitlement version is invalid.');
+    if (input.validUntil !== null && (!Number.isFinite(Date.parse(input.validUntil)) || Number.isNaN(Date.parse(input.validUntil)))) {
+      throw new Error('Managed entitlement validUntil must be an ISO timestamp or null.');
+    }
   }
 
   private migrate(): void {
