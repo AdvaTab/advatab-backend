@@ -5,6 +5,7 @@ import { VAULT_HEADER } from './signatures';
 import type { RuntimeEnv } from './env';
 
 export { VaultDurableObject } from './vault';
+export type { ManagedVaultControlRpc } from './managed-control';
 
 const corsHeaders: Record<string, string> = {
   'access-control-allow-origin': '*',
