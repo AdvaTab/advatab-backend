@@ -5,6 +5,7 @@ import type {
   InitializeManagedVaultRequest,
   ManagedVaultControlRpc,
 } from '../src/managed-control';
+import { canonicalJson, immutableInputHash } from '../src/managed-control';
 import { createDevice } from './helpers';
 
 function controlStub(): { id: DurableObjectId; stub: ManagedVaultControlRpc } {
@@ -58,4 +59,29 @@ it('rejects changed operation inputs and reinitialization of a different vault',
   }
   expect(secondInitializationError).toMatchObject({ message: expect.stringMatching(/already been initialized/) });
   expect(await stub.initializeManagedVault(input)).toEqual(first);
+});
+
+it('serializes identical concurrent initialization calls and hashes finite canonical inputs', async () => {
+  expect(canonicalJson({ z: 1, a: { y: true, b: 2 } })).toBe('{"a":{"b":2,"y":true},"z":1}');
+  await expect(immutableInputHash({ invalid: Number.NaN })).rejects.toThrow(/finite numbers/);
+
+  const device = await createDevice(`managed-concurrent-device-${crypto.randomUUID()}`);
+  const { id, stub } = controlStub();
+  const input: InitializeManagedVaultRequest = {
+    operationId: crypto.randomUUID(),
+    vaultId: crypto.randomUUID(),
+    credential: { credentialId: 'credential-concurrent', publicKey: 'cHVibGljLWtleQ', signCount: 0 },
+    device: { deviceId: device.deviceId, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: device.publicKey },
+    effectiveEntitlement: { product: 'cloud-sync', tier: 'tester', mode: 'read_write', validUntil: null, version: 1 },
+  };
+  const results = await Promise.all([
+    stub.initializeManagedVault(input),
+    stub.initializeManagedVault(input),
+    stub.initializeManagedVault(input),
+  ]);
+  expect(results).toEqual([
+    { status: 'initialized', vaultHandle: id.toString(), entitlementVersion: 1 },
+    { status: 'initialized', vaultHandle: id.toString(), entitlementVersion: 1 },
+    { status: 'initialized', vaultHandle: id.toString(), entitlementVersion: 1 },
+  ]);
 });

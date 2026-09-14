@@ -79,12 +79,16 @@ export class ManagedControlConflictError extends Error {
 type Sql = DurableObjectState['storage']['sql'];
 
 function canonicalValue(value: unknown): unknown {
-  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('Managed control inputs must contain only finite numbers.');
+    return value;
+  }
   if (Array.isArray(value)) return value.map((entry) => canonicalValue(entry));
   if (typeof value === 'object') {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)
       .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
       .map(([key, entry]) => [key, canonicalValue(entry)]));
   }
   throw new TypeError('Managed control inputs must contain only JSON values.');
