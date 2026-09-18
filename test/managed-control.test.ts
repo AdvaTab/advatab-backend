@@ -207,13 +207,14 @@ it('keeps pull, envelope listing, device listing, and revocation available in re
     protocolVersion: 1, transferPublicKey: deviceB.publicKey,
     device: { deviceId: `blocked-${deviceB.deviceId}`, authAlgorithm: 'ecdsa-p256-sha256', authPublicKey: deviceB.publicKey },
   }));
-  expect(pairingCreate.status).toBe(403);
+  expect(pairingCreate.status).toBe(201);
   const pendingPairings = await raw.fetch(await signedRequest('/v1/pairings/pending', 'GET', deviceA, initialized.vaultHandle));
-  expect(pendingPairings.status).toBe(403);
+  expect(pendingPairings.status).toBe(200);
+  expect((await responseJson<{ pairings: Array<{ device: { deviceId: string } }> }>(pendingPairings)).pairings.map((entry) => entry.device.deviceId)).toContain(`blocked-${deviceB.deviceId}`);
   const pairingPoll = await raw.fetch(jsonRequest(`/v1/pairings/${pairing.pairingId}`, 'GET', undefined, { authorization: `AdvaTab-Pairing ${pairing.pollingSecret}` }));
-  expect(pairingPoll.status).toBe(403);
+  expect(pairingPoll.status).toBe(200);
   const pairingConsume = await raw.fetch(jsonRequest(`/v1/pairings/${pairing.pairingId}/consume`, 'POST', undefined, { authorization: `AdvaTab-Pairing ${pairing.pollingSecret}` }));
-  expect(pairingConsume.status).toBe(403);
+  expect(pairingConsume.status).toBe(204);
 });
 
 it('applies the read-write/read-only/expired operation matrix', async () => {

@@ -72,6 +72,8 @@ Customer-management authorizes the recovery generation before invoking this RPC.
 
 Generation `1` is populated when the first signed `PUT /v1/envelopes/recovery-v1` succeeds for a managed vault. Add `storeManagedRecoveryGeneration({ operationId, generation, recoveryEnvelope })` for customer-management's explicit replacement saga and `hasManagedRecoveryGeneration({ generation })` for initial activation checks. Generations are positive, immutable once stored, and an identical retry succeeds. A generation with different ciphertext conflicts.
 
+On upgrade, the first generation-`1` availability or recovery request, or any generation-storage access, lazily inspects legacy `key_envelopes` rows with type `recovery-v1`. It materializes generation `1` only when all candidates are version `1`, have non-empty nonce and ciphertext, and are byte-identical; duplicate rows are therefore deterministic. Any malformed or conflicting candidate leaves generation `1` unavailable and rejects generation storage, preventing the upgrader from choosing an arbitrary ciphertext. This only touches managed recovery metadata and leaves public Phase 2 envelope responses unchanged.
+
 Old encrypted generations may remain stored after D1 revokes their verifier; they are unreachable through recovery because customer-management no longer authorizes that generation. Cleanup can remove revoked generations in a later operation but is not required for correctness.
 
 ### Extend the common control-operation ledger

@@ -47,7 +47,7 @@ The existing `VaultDurableObject` MUST expose `recoverManagedDevice` accepting a
 
 ### Requirement: Store immutable managed recovery-envelope generations
 
-The Durable Object MUST retain positive, versioned encrypted recovery-envelope generations for managed recovery. The first signed managed recovery-envelope upload MUST make generation `1` available. Typed control RPC MUST allow an authenticated control-plane saga to store a higher generation and to test generation availability. A stored generation MUST be immutable: identical content is idempotent and different content for the same generation conflicts.
+The Durable Object MUST retain positive, versioned encrypted recovery-envelope generations for managed recovery. The first signed managed recovery-envelope upload MUST make generation `1` available. Typed control RPC MUST allow an authenticated control-plane saga to store a higher generation and to test generation availability. A stored generation MUST be immutable: identical content is idempotent and different content for the same generation conflicts. When upgrading a managed vault created before this generation table existed, the object MUST lazily materialize generation `1` from its existing `key_envelopes` rows before answering generation-`1` availability or recovery requests and before storing a higher generation. It MAY accept duplicate legacy rows only when every `recovery-v1` candidate has crypto version `1`, non-empty nonce and ciphertext, and byte-identical content; malformed or conflicting candidates MUST leave generation `1` unavailable and fail closed.
 
 #### Scenario: Initial managed envelope becomes generation one
 
@@ -64,6 +64,16 @@ The Durable Object MUST retain positive, versioned encrypted recovery-envelope g
 
 - **WHEN** a caller attempts to store different envelope content under an existing generation
 - **THEN** the RPC returns a conflict and preserves the original envelope
+
+#### Scenario: Legacy generation one is backfilled
+
+- **WHEN** a managed vault created before this change has one or more identical `recovery-v1` rows in `key_envelopes` and generation `1` has not yet been materialized
+- **THEN** the object stores that ciphertext as immutable generation `1` before reporting it available or storing a higher generation
+
+#### Scenario: Conflicting legacy envelopes fail closed
+
+- **WHEN** legacy `recovery-v1` rows contain malformed or different nonce/ciphertext content
+- **THEN** generation `1` remains unavailable and the object does not select a candidate or stage another generation through the same control operation
 
 ## MODIFIED Requirements
 

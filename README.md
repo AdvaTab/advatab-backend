@@ -147,11 +147,35 @@ npm run deploy:production
 Deploy the backend before enabling the customer-management external namespace
 binding. The backend Worker owns `VaultDurableObject`, its SQLite migrations,
 the `VAULTS` namespace, and the typed `initializeManagedVault` and
-`setEffectiveEntitlement` RPCs. Customer-management must bind to this class
+`setEffectiveEntitlement` RPCs. Returning-user control uses the same binding for
+`verifyManagedPasskey`, `confirmManagedRecoveryGeneration` (also exposed as
+the local availability probe `hasManagedRecoveryGeneration`),
+`storeManagedRecoveryGeneration`, and `recoverManagedDevice`. Customer-management must bind to this class
 with `script_name` and must not declare a local class, migration, or copied
 data-plane implementation. Use the matching backend script name for each
 environment (`geboom-sync-staging` or `geboom-sync-production`) and the
 checked-in `spec/managed-vault-control-rpc-fixture.ts` as the contract.
+
+Managed recovery generation `1` is staged automatically when a signed managed
+`recovery-v1` envelope upload succeeds. Higher generations are immutable: an
+identical retry is successful, while different ciphertext under an existing
+generation conflicts. Older ciphertext remains in the Durable Object until a
+future safe cleanup operation; revoking a customer-management verifier makes
+that generation unreachable without deleting the recovery material eagerly.
+
+Managed vaults created before generation storage was introduced are upgraded
+lazily. Before reporting generation `1` available, recovering generation `1`, or
+storing a higher generation, the object inspects legacy `recovery-v1` envelope
+rows. It materializes generation `1` only when all candidates are valid and
+byte-identical; duplicate rows are safe, while malformed or conflicting rows
+remain unavailable and fail closed. This migration does not change the public
+Phase 2 envelope response.
+
+Effective `read_only` access continues to block sync mutations and ordinary
+envelope writes, but keeps encrypted pull/export, device listing and
+revocation, authenticated pairing, passkey verification, and authorized
+recovery-device enrollment available. Devices added during restoration inherit
+the same vault-wide read-only policy.
 
 Observe deployments with `npx wrangler tail --env staging` or the Workers
 dashboard. Existing structured `request` and `vault_error` events cover the

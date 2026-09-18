@@ -1,7 +1,14 @@
 import { sha256Base64Url, utf8 } from './encoding';
 import type { AUTH_ALGORITHM } from './protocol';
 
-export type ManagedControlMethod = 'initializeManagedVault' | 'setEffectiveEntitlement';
+export type ManagedControlMethod =
+  | 'initializeManagedVault'
+  | 'setEffectiveEntitlement'
+  | 'verifyManagedPasskey'
+  | 'recoverManagedDevice'
+  | 'storeManagedRecoveryGeneration'
+  | 'hasManagedRecoveryGeneration'
+  | 'confirmManagedRecoveryGeneration';
 
 export type ManagedAccessMode = 'read_write' | 'read_only';
 export type ManagedTier = 'tester' | 'pro' | null;
@@ -16,6 +23,26 @@ export interface ManagedDevice {
   deviceId: string;
   authAlgorithm: typeof AUTH_ALGORITHM;
   authPublicKey: string;
+}
+
+/** The JSON-safe WebAuthn assertion shape accepted by the internal RPC. */
+export interface ManagedPasskeyAssertion {
+  id: string;
+  rawId?: string;
+  type: 'public-key';
+  response: {
+    clientDataJSON: string;
+    authenticatorData: string;
+    signature: string;
+    userHandle?: string | null;
+  };
+}
+
+export interface ManagedRecoveryEnvelope {
+  type: 'recovery-v1';
+  cryptoVersion: 1;
+  nonce: string;
+  ciphertext: string;
 }
 
 export interface EffectiveEntitlement {
@@ -54,9 +81,89 @@ export interface SetEffectiveEntitlementResult {
   entitlementVersion: number;
 }
 
+export interface VerifyManagedPasskeyRequest {
+  operationId: string;
+  /** The routing handle supplied by customer-management, encoded as DO-ID hex. */
+  userHandle?: string;
+  /** Legacy names remain accepted while callers migrate to the shared contract. */
+  expectedChallenge?: string;
+  expectedRpId?: string;
+  challenge?: string;
+  rpId?: string;
+  expectedOrigin: string;
+  assertion: ManagedPasskeyAssertion;
+}
+
+export interface VerifyManagedPasskeyResult {
+  verified: true;
+  vaultId: string;
+  vaultHandle: string;
+  credentialId: string;
+  signCount: number;
+  /** Compatibility fields retained for early managed-client fixtures. */
+  status?: 'verified';
+  protocolVersion?: number;
+  effectiveEntitlement?: EffectiveEntitlement;
+}
+
+export interface RecoverManagedDeviceRequest {
+  operationId: string;
+  generation?: number;
+  recoveryGeneration?: number;
+  vaultId?: string;
+  device: ManagedDevice;
+}
+
+export interface RecoverManagedDeviceResult {
+  status: 'recovered';
+  vaultId: string;
+  vaultHandle: string;
+  deviceId: string;
+  encryptedRecoveryEnvelope: ManagedRecoveryEnvelope;
+  recoveryEnvelope?: ManagedRecoveryEnvelope;
+  protocolVersion: number;
+  effectiveEntitlement: EffectiveEntitlement;
+}
+
+export interface StoreManagedRecoveryGenerationRequest {
+  operationId: string;
+  generation: number;
+  encryptedRecoveryEnvelope?: ManagedRecoveryEnvelope;
+  recoveryEnvelope?: ManagedRecoveryEnvelope;
+}
+
+export interface StoreManagedRecoveryGenerationResult {
+  stored: boolean;
+  generation: number;
+}
+
+export interface HasManagedRecoveryGenerationRequest {
+  generation: number;
+  /** Optional for the read-only availability probe; callers may supply one to make the probe auditable/idempotent. */
+  operationId?: string;
+}
+
+export interface HasManagedRecoveryGenerationResult {
+  available: boolean;
+}
+
+export interface ConfirmManagedRecoveryGenerationResult extends HasManagedRecoveryGenerationResult {
+  generation: number;
+}
+
+export type VerifyManagedPasskeyInput = VerifyManagedPasskeyRequest;
+export type ConfirmManagedRecoveryGenerationInput = HasManagedRecoveryGenerationRequest;
+export type StoreManagedRecoveryGenerationInput = StoreManagedRecoveryGenerationRequest;
+export type RecoverManagedDeviceInput = RecoverManagedDeviceRequest;
+
 export interface ManagedVaultControlRpc {
   initializeManagedVault(input: InitializeManagedVaultRequest): Promise<InitializeManagedVaultResult>;
   setEffectiveEntitlement(input: SetEffectiveEntitlementRequest): Promise<SetEffectiveEntitlementResult>;
+  verifyManagedPasskey(input: VerifyManagedPasskeyRequest): Promise<VerifyManagedPasskeyResult>;
+  confirmManagedRecoveryGeneration(input: HasManagedRecoveryGenerationRequest): Promise<ConfirmManagedRecoveryGenerationResult>;
+  recoverManagedDevice(input: RecoverManagedDeviceRequest): Promise<RecoverManagedDeviceResult>;
+  storeManagedRecoveryGeneration(input: StoreManagedRecoveryGenerationRequest): Promise<StoreManagedRecoveryGenerationResult>;
+  hasManagedRecoveryGeneration(input: HasManagedRecoveryGenerationRequest): Promise<HasManagedRecoveryGenerationResult>;
 }
 
 export function effectiveAccessMode(mode: ManagedAccessMode, validUntil: string | null, now = Date.now()): ManagedAccessMode {

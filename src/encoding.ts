@@ -28,6 +28,18 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
   return bytesToBase64(bytes).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 }
 
+export function base64UrlToBytes(value: string, field = 'value'): Uint8Array<ArrayBuffer> {
+  if (!/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
+    throw new ApiError('invalid_request', `${field} must be canonical base64url.`);
+  }
+  const padded = value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - value.length % 4) % 4);
+  try {
+    return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0)) as Uint8Array<ArrayBuffer>;
+  } catch {
+    throw new ApiError('invalid_request', `${field} must be valid base64url.`);
+  }
+}
+
 export function toArrayBuffer(value: Uint8Array): ArrayBuffer {
   return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
 }

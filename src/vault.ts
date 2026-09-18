@@ -15,8 +15,10 @@ import { DEVICE_HEADER, REQUEST_HEADER, verifySignedRequest } from './signatures
 import { parseBootstrap, parseEnvelope, parseId, parsePairingApprove, parsePairingCreate, parseSync } from './validation';
 import type { RuntimeEnv } from './env';
 import { assertCursor, assertPageProgress, changeFits, decideMutation, jsonByteLength } from './sync-engine';
+import { verifyManagedAssertion } from './managed-webauthn';
 import {
   getControlOperation,
+  canonicalJson,
   effectiveAccessMode,
   immutableInputHash,
   ManagedControlConflictError,
@@ -26,11 +28,23 @@ import {
   type InitializeManagedVaultResult,
   type SetEffectiveEntitlementRequest,
   type SetEffectiveEntitlementResult,
+  type VerifyManagedPasskeyRequest,
+  type VerifyManagedPasskeyResult,
+  type RecoverManagedDeviceRequest,
+  type RecoverManagedDeviceResult,
+  type StoreManagedRecoveryGenerationRequest,
+  type StoreManagedRecoveryGenerationResult,
+  type HasManagedRecoveryGenerationRequest,
+  type HasManagedRecoveryGenerationResult,
+  type ConfirmManagedRecoveryGenerationResult,
+  type ManagedRecoveryEnvelope,
+  type ManagedPasskeyAssertion,
 } from './managed-control';
 
 type Sql = DurableObjectState['storage']['sql'];
 
 interface MetaRow {
+  protocol_version: number;
   current_revision: number;
   created_at: string;
   vault_id: string | null;
@@ -90,6 +104,22 @@ interface ManagedEntitlementRow {
   version: number;
   updated_at: string;
 }
+
+interface ManagedRecoveryGenerationRow {
+  generation: number;
+  recovery_envelope_json: string;
+  created_at: string;
+}
+
+interface LegacyRecoveryEnvelopeRow {
+  envelope_id: string;
+  envelope_type: string;
+  crypto_version: number;
+  nonce: ArrayBuffer | null;
+  ciphertext: ArrayBuffer;
+}
+
+type LegacyRecoveryGenerationState = 'missing' | 'materialized' | 'conflict';
 
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' };
 const nowIso = (): string => new Date().toISOString();
@@ -231,6 +261,163 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
     });
   }
 
+  async verifyManagedPasskey(input: VerifyManagedPasskeyRequest): Promise<VerifyManagedPasskeyResult> {
+    this.assertManagedPasskeyInput(input);
+    const challenge = input.expectedChallenge ?? input.challenge as string;
+    const rpId = input.expectedRpId ?? input.rpId as string;
+    const assertion = input.assertion as ManagedPasskeyAssertion;
+    const inputHash = await immutableInputHash(input);
+    const preflight = this.ctx.storage.transactionSync(() => {
+      const stored = getControlOperation<VerifyManagedPasskeyResult>(this.sql, input.operationId, 'verifyManagedPasskey', inputHash);
+      if (stored) return { stored };
+      const meta = getOne<ManagedVaultMetaRow>(this.sql, 'SELECT * FROM managed_vault_meta WHERE singleton = 1');
+      if (!meta) throw new ManagedControlConflictError('Passkey verification requires a managed vault initialization.');
+      return { stored: null, meta };
+    });
+    if (preflight.stored) return preflight.stored;
+
+    const counter = await verifyManagedAssertion(assertion, {
+      credentialId: preflight.meta.credential_id,
+      publicKey: preflight.meta.credential_public_key,
+      signCount: preflight.meta.credential_sign_count,
+    }, {
+      challenge,
+      rpId,
+      origin: input.expectedOrigin,
+      vaultHandle: this.managedVaultHandleBytes(),
+    });
+    return this.ctx.storage.transactionSync(() => {
+      const stored = getControlOperation<VerifyManagedPasskeyResult>(this.sql, input.operationId, 'verifyManagedPasskey', inputHash);
+      if (stored) return stored;
+      const current = getOne<ManagedVaultMetaRow>(this.sql, 'SELECT * FROM managed_vault_meta WHERE singleton = 1');
+      if (!current) throw new ManagedControlConflictError('Passkey verification requires a managed vault initialization.');
+      if (current.credential_id !== preflight.meta.credential_id || current.credential_public_key !== preflight.meta.credential_public_key) {
+        throw new ManagedControlConflictError('The managed credential changed while the assertion was being verified.');
+      }
+      if (current.credential_sign_count > 0 && counter > 0 && counter <= current.credential_sign_count) {
+        throw new ManagedControlConflictError('The WebAuthn signature counter regressed.');
+      }
+      const nextCounter = counter > current.credential_sign_count ? counter : current.credential_sign_count;
+      if (nextCounter !== current.credential_sign_count) {
+        this.sql.exec('UPDATE managed_vault_meta SET credential_sign_count = ? WHERE singleton = 1', nextCounter);
+      }
+      const timestamp = nowIso();
+      const result: VerifyManagedPasskeyResult = {
+        verified: true,
+        vaultId: current.vault_id,
+        vaultHandle: this.ctx.id.toString(),
+        credentialId: current.credential_id,
+        signCount: nextCounter,
+        status: 'verified',
+        protocolVersion: this.meta().protocol_version,
+        effectiveEntitlement: this.effectiveEntitlement(),
+      };
+      storeControlOperation(this.sql, input.operationId, 'verifyManagedPasskey', inputHash, result, timestamp);
+      return result;
+    });
+  }
+
+  async recoverManagedDevice(input: RecoverManagedDeviceRequest): Promise<RecoverManagedDeviceResult> {
+    this.assertRecoverManagedDeviceInput(input);
+    await this.validateDevicePublicKey(input.device);
+    const inputHash = await immutableInputHash(input);
+    const generationNumber = (input.generation ?? input.recoveryGeneration) as number;
+    return this.ctx.storage.transactionSync(() => {
+      const stored = getControlOperation<RecoverManagedDeviceResult>(this.sql, input.operationId, 'recoverManagedDevice', inputHash);
+      if (stored) return stored;
+      const managed = getOne<ManagedVaultMetaRow>(this.sql, 'SELECT * FROM managed_vault_meta WHERE singleton = 1');
+      if (!managed) throw new ManagedControlConflictError('Device recovery requires a managed vault initialization.');
+      if (input.vaultId !== undefined && managed.vault_id !== input.vaultId) throw new ManagedControlConflictError('The recovery vault ID does not match this managed vault.');
+      if (generationNumber === 1) this.materializeLegacyRecoveryGenerationOne();
+      const generation = getOne<ManagedRecoveryGenerationRow>(this.sql, 'SELECT * FROM managed_recovery_generations WHERE generation = ?', generationNumber);
+      if (!generation) throw new ManagedControlConflictError('The requested recovery generation is unavailable.');
+      const envelope = this.parseStoredRecoveryEnvelope(generation.recovery_envelope_json);
+      const existing = getOne<DeviceRow>(this.sql, 'SELECT * FROM devices WHERE device_id = ?', input.device.deviceId);
+      if (existing && (existing.auth_algorithm !== input.device.authAlgorithm || bytesToBase64(bytes(existing.auth_public_key)) !== input.device.authPublicKey)) {
+        throw new ManagedControlConflictError('The recovery device ID is already registered with a different key.');
+      }
+      const timestamp = nowIso();
+      if (!existing) this.insertDevice(input.device, timestamp);
+      const result: RecoverManagedDeviceResult = {
+        status: 'recovered',
+        vaultId: managed.vault_id,
+        vaultHandle: this.ctx.id.toString(),
+        deviceId: input.device.deviceId,
+        encryptedRecoveryEnvelope: envelope,
+        recoveryEnvelope: envelope,
+        protocolVersion: this.meta().protocol_version,
+        effectiveEntitlement: this.effectiveEntitlement(),
+      };
+      storeControlOperation(this.sql, input.operationId, 'recoverManagedDevice', inputHash, result, timestamp);
+      return result;
+    });
+  }
+
+  async storeManagedRecoveryGeneration(input: StoreManagedRecoveryGenerationRequest): Promise<StoreManagedRecoveryGenerationResult> {
+    this.assertStoreManagedRecoveryGenerationInput(input);
+    const inputHash = await immutableInputHash(input);
+    const recoveryEnvelope = input.encryptedRecoveryEnvelope ?? input.recoveryEnvelope as ManagedRecoveryEnvelope;
+    return this.ctx.storage.transactionSync(() => {
+      const stored = getControlOperation<StoreManagedRecoveryGenerationResult>(this.sql, input.operationId, 'storeManagedRecoveryGeneration', inputHash);
+      if (stored) return stored;
+      if (!getOne<ManagedVaultMetaRow>(this.sql, 'SELECT * FROM managed_vault_meta WHERE singleton = 1')) {
+        throw new ManagedControlConflictError('Recovery generations require a managed vault initialization.');
+      }
+      if (this.materializeLegacyRecoveryGenerationOne() === 'conflict') {
+        throw new ManagedControlConflictError('Legacy recovery generation 1 has conflicting envelope content.');
+      }
+      const existing = getOne<ManagedRecoveryGenerationRow>(this.sql, 'SELECT * FROM managed_recovery_generations WHERE generation = ?', input.generation);
+      const serialized = canonicalJson(recoveryEnvelope);
+      if (existing) {
+        if (existing.recovery_envelope_json !== serialized) throw new ManagedControlConflictError('The recovery generation is already associated with different envelope content.');
+      } else {
+        const highest = getOne<{ generation: number }>(this.sql, 'SELECT MAX(generation) AS generation FROM managed_recovery_generations');
+        if (highest?.generation !== null && highest?.generation !== undefined && input.generation <= highest.generation) {
+          throw new ManagedControlConflictError('Recovery generations must increase monotonically.');
+        }
+        this.sql.exec(
+          'INSERT INTO managed_recovery_generations(generation, recovery_envelope_json, created_at) VALUES (?, ?, ?)',
+          input.generation,
+          serialized,
+          nowIso(),
+        );
+      }
+      const result: StoreManagedRecoveryGenerationResult = { stored: true, generation: input.generation };
+      storeControlOperation(this.sql, input.operationId, 'storeManagedRecoveryGeneration', inputHash, result, nowIso());
+      return result;
+    });
+  }
+
+  async hasManagedRecoveryGeneration(input: HasManagedRecoveryGenerationRequest): Promise<HasManagedRecoveryGenerationResult> {
+    return this.checkManagedRecoveryGeneration(input, 'hasManagedRecoveryGeneration');
+  }
+
+  private async checkManagedRecoveryGeneration(input: HasManagedRecoveryGenerationRequest, method: 'hasManagedRecoveryGeneration' | 'confirmManagedRecoveryGeneration'): Promise<HasManagedRecoveryGenerationResult | ConfirmManagedRecoveryGenerationResult> {
+    if (!Number.isSafeInteger(input?.generation) || input.generation < 1) throw new Error('Recovery generation must be a positive safe integer.');
+    if (input.operationId !== undefined && !this.validControlId(input.operationId)) throw new Error('Recovery-generation availability requires a valid operationId.');
+    const inputHash = input.operationId === undefined ? null : await immutableInputHash(input);
+    return this.ctx.storage.transactionSync(() => {
+      if (input.operationId && inputHash) {
+        const stored = getControlOperation<HasManagedRecoveryGenerationResult | ConfirmManagedRecoveryGenerationResult>(this.sql, input.operationId, method, inputHash);
+        if (stored) return stored;
+      }
+      if (!getOne<ManagedVaultMetaRow>(this.sql, 'SELECT * FROM managed_vault_meta WHERE singleton = 1')) {
+        throw new ManagedControlConflictError('Recovery generations require a managed vault initialization.');
+      }
+      this.materializeLegacyRecoveryGenerationOne();
+      const available = getOne(this.sql, 'SELECT 1 FROM managed_recovery_generations WHERE generation = ?', input.generation) !== null;
+      const result: HasManagedRecoveryGenerationResult | ConfirmManagedRecoveryGenerationResult = method === 'confirmManagedRecoveryGeneration'
+        ? { available, generation: input.generation }
+        : { available };
+      if (input.operationId && inputHash) storeControlOperation(this.sql, input.operationId, method, inputHash, result, nowIso());
+      return result;
+    });
+  }
+
+  async confirmManagedRecoveryGeneration(input: HasManagedRecoveryGenerationRequest): Promise<ConfirmManagedRecoveryGenerationResult> {
+    return await this.checkManagedRecoveryGeneration(input, 'confirmManagedRecoveryGeneration') as ConfirmManagedRecoveryGenerationResult;
+  }
+
   private assertManagedInitializationInput(input: InitializeManagedVaultRequest): void {
     if (!input.operationId || !input.vaultId) throw new Error('Managed initialization requires operationId and vaultId.');
     if (!input.credential.credentialId || !input.credential.publicKey || !Number.isSafeInteger(input.credential.signCount) || input.credential.signCount < 0) {
@@ -356,8 +543,14 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
         result_json TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS managed_recovery_generations (
+        generation INTEGER PRIMARY KEY CHECK (generation > 0),
+        recovery_envelope_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, datetime('now'));
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, datetime('now'));
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, datetime('now'));
     `);
     const meta = getOne<MetaRow>(this.sql, 'SELECT * FROM vault_meta WHERE singleton = 1');
     if (!meta) {
@@ -420,6 +613,112 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
       validUntil: entitlement.valid_until,
       version: entitlement.version,
     };
+  }
+
+  private effectiveEntitlement(): EffectiveEntitlement {
+    const managed = this.managedAccess();
+    if (!managed) throw new ManagedControlConflictError('Effective entitlements require a managed vault initialization.');
+    const stored = getOne<ManagedEntitlementRow>(this.sql, 'SELECT * FROM managed_effective_entitlements WHERE product = ?', 'cloud-sync');
+    return {
+      product: 'cloud-sync',
+      tier: managed.tier,
+      mode: managed.mode,
+      validUntil: stored?.valid_until ?? managed.validUntil,
+      version: managed.version,
+    };
+  }
+
+  private managedVaultHandleBytes(): Uint8Array<ArrayBuffer> {
+    const handle = this.ctx.id.toString();
+    if (!/^[0-9a-f]{64}$/.test(handle)) throw new ManagedControlConflictError('The managed vault handle is not a 32-byte identifier.');
+    const result = new Uint8Array(32);
+    for (let index = 0; index < 32; index += 1) result[index] = Number.parseInt(handle.slice(index * 2, index * 2 + 2), 16);
+    return result as Uint8Array<ArrayBuffer>;
+  }
+
+  private parseStoredRecoveryEnvelope(serialized: string): ManagedRecoveryEnvelope {
+    let value: unknown;
+    try { value = JSON.parse(serialized); } catch { throw new ManagedControlConflictError('The stored recovery envelope is invalid.'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ManagedControlConflictError('The stored recovery envelope is invalid.');
+    const envelope = value as Partial<ManagedRecoveryEnvelope>;
+    if (envelope.type !== 'recovery-v1' || envelope.cryptoVersion !== 1 || typeof envelope.nonce !== 'string' || typeof envelope.ciphertext !== 'string') {
+      throw new ManagedControlConflictError('The stored recovery envelope is invalid.');
+    }
+    return { type: 'recovery-v1', cryptoVersion: 1, nonce: envelope.nonce, ciphertext: envelope.ciphertext };
+  }
+
+  private materializeLegacyRecoveryGenerationOne(): LegacyRecoveryGenerationState {
+    if (getOne<ManagedRecoveryGenerationRow>(this.sql, 'SELECT * FROM managed_recovery_generations WHERE generation = 1')) return 'materialized';
+    const legacyRows = rows<LegacyRecoveryEnvelopeRow>(
+      this.sql,
+      'SELECT envelope_id, envelope_type, crypto_version, nonce, ciphertext FROM key_envelopes WHERE envelope_type = ? ORDER BY envelope_id',
+      'recovery-v1',
+    );
+    if (legacyRows.length === 0) return 'missing';
+    let serialized: string | null = null;
+    for (const row of legacyRows) {
+      if (row.crypto_version !== 1 || !row.nonce || row.nonce.byteLength === 0 || row.ciphertext.byteLength === 0) return 'conflict';
+      const candidate = canonicalJson({
+        type: 'recovery-v1',
+        cryptoVersion: 1,
+        nonce: bytesToBase64(bytes(row.nonce)),
+        ciphertext: bytesToBase64(bytes(row.ciphertext)),
+      } satisfies ManagedRecoveryEnvelope);
+      if (serialized === null) serialized = candidate;
+      else if (serialized !== candidate) return 'conflict';
+    }
+    if (serialized === null) return 'conflict';
+    this.sql.exec('INSERT INTO managed_recovery_generations(generation, recovery_envelope_json, created_at) VALUES (1, ?, ?)', serialized, nowIso());
+    return 'materialized';
+  }
+
+  private assertManagedPasskeyInput(input: VerifyManagedPasskeyRequest): void {
+    if (!input || typeof input !== 'object' || !this.validControlId(input.operationId)) throw new Error('Passkey verification requires a valid operationId.');
+    const challenge = input.expectedChallenge ?? input.challenge;
+    const rpId = input.expectedRpId ?? input.rpId;
+    if (typeof challenge !== 'string' || !/^[A-Za-z0-9_-]+$/.test(challenge)) throw new Error('Passkey challenge must be canonical base64url.');
+    if (typeof rpId !== 'string' || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(rpId)) throw new Error('Passkey RP ID is invalid.');
+    if (typeof input.expectedOrigin !== 'string' || input.expectedOrigin.length < 1 || input.expectedOrigin.length > 512) throw new Error('Passkey origin is invalid.');
+    if (input.userHandle !== undefined && (!/^[0-9a-f]{64}$/.test(input.userHandle) || input.userHandle !== this.ctx.id.toString())) throw new Error('Passkey user handle is invalid.');
+    const assertion = input.assertion as Partial<ManagedPasskeyAssertion> | null;
+    if (!assertion || assertion.type !== 'public-key' || typeof assertion.id !== 'string' || assertion.id.length > 2048 || !assertion.response) {
+      throw new Error('Passkey assertion is invalid.');
+    }
+    const response = assertion.response;
+    if (typeof response.clientDataJSON !== 'string' || typeof response.authenticatorData !== 'string' || typeof response.signature !== 'string') throw new Error('Passkey assertion response is invalid.');
+    if (response.userHandle !== undefined && response.userHandle !== null && typeof response.userHandle !== 'string') throw new Error('Passkey user handle is invalid.');
+  }
+
+  private assertRecoverManagedDeviceInput(input: RecoverManagedDeviceRequest): void {
+    if (!input || typeof input !== 'object' || !this.validControlId(input.operationId)) throw new Error('Device recovery requires a valid operationId.');
+    const generation = input.generation ?? input.recoveryGeneration;
+    if (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 1) throw new Error('Recovery generation must be a positive safe integer.');
+    if (input.vaultId !== undefined && !this.validControlId(input.vaultId)) throw new Error('Device recovery vaultId is invalid.');
+    if (!input.device || !this.validControlId(input.device.deviceId) || input.device.authAlgorithm !== AUTH_ALGORITHM || typeof input.device.authPublicKey !== 'string') {
+      throw new Error('Device recovery requires a valid public device identity.');
+    }
+  }
+
+  private assertStoreManagedRecoveryGenerationInput(input: StoreManagedRecoveryGenerationRequest): void {
+    if (!input || typeof input !== 'object' || !this.validControlId(input.operationId)) throw new Error('Recovery-generation storage requires a valid operationId.');
+    if (!Number.isSafeInteger(input.generation) || input.generation < 1) throw new Error('Recovery generation must be a positive safe integer.');
+    const envelope = input.encryptedRecoveryEnvelope ?? input.recoveryEnvelope;
+    if (!envelope || envelope.type !== 'recovery-v1' || envelope.cryptoVersion !== 1 || typeof envelope.nonce !== 'string' || typeof envelope.ciphertext !== 'string') {
+      throw new Error('Recovery generation requires a valid encrypted recovery envelope.');
+    }
+    try {
+      const nonce = base64ToBytes(envelope.nonce, 'recoveryEnvelope.nonce');
+      const ciphertext = base64ToBytes(envelope.ciphertext, 'recoveryEnvelope.ciphertext');
+      if (nonce.byteLength === 0 || ciphertext.byteLength === 0) throw new Error('empty');
+      if (ciphertext.byteLength > this.limits.maxItemBytes) throw new ApiError('payload_too_large', 'Recovery envelope ciphertext exceeds maxItemBytes.', 413);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new Error('Recovery generation requires valid base64 envelope content.');
+    }
+  }
+
+  private validControlId(value: unknown): value is string {
+    return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
   }
 
   private assertManagedWriteAllowed(): void {
@@ -720,21 +1019,37 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
     this.assertManagedWriteAllowed();
     const input = parseEnvelope(await readJson(body), this.limits);
     const timestamp = nowIso();
-    this.sql.exec(
-      `INSERT INTO key_envelopes(envelope_id, envelope_type, credential_ref, crypto_version, nonce, ciphertext, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(envelope_id) DO UPDATE SET envelope_type = excluded.envelope_type, credential_ref = excluded.credential_ref,
-         crypto_version = excluded.crypto_version, nonce = excluded.nonce, ciphertext = excluded.ciphertext, updated_at = excluded.updated_at`,
-      envelopeId,
-      input.type,
-      input.credentialRef ?? null,
-      input.cryptoVersion,
-      input.nonce ? blob(input.nonce, 'nonce') : null,
-      blob(input.ciphertext, 'ciphertext'),
-      timestamp,
-      timestamp,
-    );
-    this.touch(deviceId);
+    this.ctx.storage.transactionSync(() => {
+      const managed = getOne<ManagedVaultMetaRow>(this.sql, 'SELECT * FROM managed_vault_meta WHERE singleton = 1');
+      if (managed && input.type === 'recovery-v1' && input.nonce && this.materializeLegacyRecoveryGenerationOne() === 'conflict') {
+        throw new ManagedControlConflictError('Legacy recovery generation 1 has conflicting envelope content.');
+      }
+      this.sql.exec(
+        `INSERT INTO key_envelopes(envelope_id, envelope_type, credential_ref, crypto_version, nonce, ciphertext, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(envelope_id) DO UPDATE SET envelope_type = excluded.envelope_type, credential_ref = excluded.credential_ref,
+           crypto_version = excluded.crypto_version, nonce = excluded.nonce, ciphertext = excluded.ciphertext, updated_at = excluded.updated_at`,
+        envelopeId,
+        input.type,
+        input.credentialRef ?? null,
+        input.cryptoVersion,
+        input.nonce ? blob(input.nonce, 'nonce') : null,
+        blob(input.ciphertext, 'ciphertext'),
+        timestamp,
+        timestamp,
+      );
+      if (managed && input.type === 'recovery-v1' && input.nonce) {
+        const generation: ManagedRecoveryEnvelope = { type: 'recovery-v1', cryptoVersion: 1, nonce: input.nonce, ciphertext: input.ciphertext };
+        const serialized = canonicalJson(generation);
+        const existing = getOne<ManagedRecoveryGenerationRow>(this.sql, 'SELECT * FROM managed_recovery_generations WHERE generation = 1');
+        if (!existing) {
+          this.sql.exec('INSERT INTO managed_recovery_generations(generation, recovery_envelope_json, created_at) VALUES (1, ?, ?)', serialized, timestamp);
+        } else if (existing.recovery_envelope_json !== serialized) {
+          throw new ManagedControlConflictError('Recovery generation 1 is immutable and already contains different envelope content.');
+        }
+      }
+      this.touch(deviceId);
+    });
     return json({ envelopeId, updatedAt: timestamp });
   }
 
@@ -755,7 +1070,6 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
 
   private async createPairing(request: Request, body: Uint8Array): Promise<Response> {
     this.assertSetup();
-    this.assertManagedWriteAllowed();
     const input = parsePairingCreate(await readJson(body), this.limits);
     await this.validateDevicePublicKey(input.device);
     const source = request.headers.get('x-advatab-internal-source') || 'local';
@@ -807,7 +1121,6 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private listPendingPairings(deviceId: string): Response {
-    this.assertManagedWriteAllowed();
     this.expirePairings();
     this.touch(deviceId);
     const pairings = rows<PairingRow>(this.sql, `SELECT * FROM pairings WHERE state = 'pending' AND expires_at > ? ORDER BY created_at`, nowIso()).map((row) => ({
@@ -827,7 +1140,6 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private async approvePairing(actorId: string, pairingId: string, body: Uint8Array): Promise<Response> {
-    this.assertManagedWriteAllowed();
     const input = parsePairingApprove(await readJson(body), this.limits);
     const digest = await sha256Base64(body);
     const result = this.ctx.storage.transactionSync(() => {
@@ -872,7 +1184,6 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private async pollPairing(request: Request, pairingId: string): Promise<Response> {
-    this.assertManagedWriteAllowed();
     const pairing = await this.authorizedPairing(request, pairingId);
     return json({
       pairingId,
@@ -884,7 +1195,6 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   private async consumePairing(request: Request, pairingId: string): Promise<Response> {
-    this.assertManagedWriteAllowed();
     const pairing = await this.authorizedPairing(request, pairingId);
     if (pairing.state === 'consumed') return new Response(null, { status: 204 });
     if (pairing.state !== 'approved') throw new ApiError('invalid_pairing_state', `Pairing is ${pairing.state}.`, 409);
