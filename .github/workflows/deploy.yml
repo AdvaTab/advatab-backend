@@ -28,7 +28,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - name: Deploy selected environment
-        run: npx wrangler deploy --env "${{ inputs.environment }}"
+        run: npm run "deploy:${{ inputs.environment }}"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

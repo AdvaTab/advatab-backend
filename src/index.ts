@@ -3,6 +3,7 @@ import { sha256Base64Url, utf8 } from './encoding';
 import { ApiError, errorResponse } from './errors';
 import { VAULT_HEADER } from './signatures';
 import type { RuntimeEnv } from './env';
+import { buildInfo } from './build-info.generated';
 
 export { VaultDurableObject } from './vault';
 export type { ManagedVaultControlRpc } from './managed-control';
@@ -72,6 +73,9 @@ export default {
     const started = Date.now();
     const url = new URL(request.url);
     if (request.method === 'OPTIONS') return withCors(new Response(null, { status: 204 }));
+    if (request.method === 'GET' && url.pathname === '/api/about/version') {
+      return withCors(Response.json(buildInfo, { headers: { 'cache-control': 'no-store' } }));
+    }
     let response: Response;
     let requestBytes = 0;
     try {

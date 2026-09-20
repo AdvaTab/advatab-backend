@@ -1,5 +1,6 @@
 node_modules/
 dist/
+/src/build-info.generated.ts
 .wrangler/
 coverage/
 .dev.vars

@@ -142,6 +142,11 @@ npm run deploy:staging
 npm run deploy:production
 ```
 
+`GET /api/about/version` returns the package version, UTC build timestamp, Git
+commit (when available), and whether the checkout had local modifications. It
+does not require a vault handle. Use the npm deployment scripts so the metadata
+is stamped immediately before deployment.
+
 ### Managed control RPC deployment
 
 Deploy the backend before enabling the customer-management external namespace
