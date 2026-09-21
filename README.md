@@ -190,6 +190,25 @@ credential key material, device private keys, recovery material, or plaintext
 records. A failed or timed-out RPC is safe to retry with the same operation
 ID.
 
+### Managed usage telemetry
+
+Every `/v1/*` Durable Object response writes one best-effort datapoint to the
+environment-specific `USAGE_ANALYTICS` dataset. The vault's opaque Durable
+Object ID is the sampling index. Dimensions are restricted to schema version,
+templated route, method, status, safe error code, entitlement tier, and access
+mode. Numeric fields contain request/response bytes, duration, SQLite rows read
+and written, current database size, and sync mutation/change/retry counts.
+Request and response bodies, item/device/pairing IDs, keys, tokens, email, and
+ciphertext are never written.
+
+Metering failures are swallowed after the response is produced, so Analytics
+Engine availability cannot break synchronization. The customer-management
+Worker applies Analytics Engine's `_sample_interval`, maps the opaque vault ID
+to its customer record, retains daily rollups, and calculates the operator-only
+shadow-cost report. Keep the local, staging, and production dataset names in
+this repository aligned with the corresponding customer-management
+`USAGE_DATASET` values.
+
 To roll back, disable customer-management onboarding and managed gateway
 traffic first, then deploy a known backend revision. Durable Object migrations
 are forward-only: leave the managed-control tables and initialized objects in

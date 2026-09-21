@@ -3,6 +3,10 @@
   "name": "geboom-sync",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-28",
+  "compatibility_flags": ["nodejs_als"],
+  "analytics_engine_datasets": [
+    { "binding": "USAGE_ANALYTICS", "dataset": "geboom_managed_usage_local" }
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "VAULTS", "class_name": "VaultDurableObject" }
@@ -26,6 +30,9 @@
   "env": {
     "staging": {
       "name": "geboom-sync-staging",
+      "analytics_engine_datasets": [
+        { "binding": "USAGE_ANALYTICS", "dataset": "geboom_managed_usage_staging" }
+      ],
       "durable_objects": { "bindings": [{ "name": "VAULTS", "class_name": "VaultDurableObject" }] },
       "vars": {
         "DEFAULT_VAULT_NAME": "default",
@@ -42,6 +49,9 @@
     },
     "production": {
       "name": "geboom-sync-production",
+      "analytics_engine_datasets": [
+        { "binding": "USAGE_ANALYTICS", "dataset": "geboom_managed_usage_production" }
+      ],
       "durable_objects": { "bindings": [{ "name": "VAULTS", "class_name": "VaultDurableObject" }] },
       "vars": {
         "DEFAULT_VAULT_NAME": "default",

@@ -4,6 +4,7 @@ import { ApiError, errorResponse } from './errors';
 import { VAULT_HEADER } from './signatures';
 import type { RuntimeEnv } from './env';
 import { buildInfo } from './build-info.generated';
+import { routeTemplate } from './usage-metering';
 
 export { VaultDurableObject } from './vault';
 export type { ManagedVaultControlRpc } from './managed-control';
@@ -38,15 +39,6 @@ function isDefaultRoute(method: string, pathname: string): boolean {
   if (method === 'POST' && pathname === '/v1/pairings') return true;
   if (method === 'GET' && /^\/v1\/pairings\/[^/]+$/.test(pathname) && pathname !== '/v1/pairings/pending') return true;
   return method === 'POST' && /^\/v1\/pairings\/[^/]+\/consume$/.test(pathname);
-}
-
-function routeTemplate(pathname: string): string {
-  if (/^\/v1\/devices\/[^/]+$/.test(pathname)) return '/v1/devices/:deviceId';
-  if (/^\/v1\/envelopes\/[^/]+$/.test(pathname)) return '/v1/envelopes/:envelopeId';
-  if (/^\/v1\/pairings\/[^/]+\/approve$/.test(pathname)) return '/v1/pairings/:pairingId/approve';
-  if (/^\/v1\/pairings\/[^/]+\/consume$/.test(pathname)) return '/v1/pairings/:pairingId/consume';
-  if (/^\/v1\/pairings\/[^/]+$/.test(pathname) && pathname !== '/v1/pairings/pending') return '/v1/pairings/:pairingId';
-  return pathname;
 }
 
 async function requestBody(request: Request, maxBytes: number): Promise<Uint8Array> {

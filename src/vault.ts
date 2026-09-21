@@ -40,6 +40,14 @@ import {
   type ManagedRecoveryEnvelope,
   type ManagedPasskeyAssertion,
 } from './managed-control';
+import {
+  createUsageMetrics,
+  instrumentSql,
+  recordMutationMetrics,
+  routeTemplate,
+  usageStorage,
+  writeUsageDataPoint,
+} from './usage-metering';
 
 type Sql = DurableObjectState['storage']['sql'];
 
@@ -139,6 +147,24 @@ async function readJson(body: Uint8Array): Promise<unknown> {
   }
 }
 
+async function responseErrorCode(response: Response): Promise<string> {
+  if (response.ok) return '';
+  try {
+    const value = (await response.clone().json()) as { error?: { code?: unknown } };
+    return typeof value.error?.code === 'string' ? value.error.code : '';
+  } catch {
+    return '';
+  }
+}
+
+async function responseBytes(response: Response): Promise<number> {
+  try {
+    return (await response.clone().arrayBuffer()).byteLength;
+  } catch {
+    return Number(response.headers.get('content-length')) || 0;
+  }
+}
+
 function itemFromRow(row: ItemRow): SyncItem {
   const item: SyncItem = { itemId: row.item_id, revision: row.revision, deleted: row.deleted === 1 };
   if (!item.deleted) {
@@ -163,7 +189,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
 
   constructor(ctx: DurableObjectState, env: RuntimeEnv) {
     super(ctx, env);
-    this.sql = ctx.storage.sql;
+    this.sql = instrumentSql(ctx.storage.sql);
     this.limits = getLimits(env);
     ctx.blockConcurrencyWhile(async () => ctx.storage.transactionSync(() => this.migrate()));
   }
@@ -564,39 +590,81 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    try {
-      const url = new URL(request.url);
-      const body = new Uint8Array(await request.arrayBuffer());
-      if (request.method === 'GET' && url.pathname === '/v1/info') return this.info();
-      if (request.method === 'POST' && url.pathname === '/v1/bootstrap/device') return await this.bootstrap(request, body);
-      if (request.method === 'POST' && url.pathname === '/v1/recovery/device') return await this.enrollRecoveryDevice(request, body);
-      if (request.method === 'POST' && url.pathname === '/v1/pairings') return await this.createPairing(request, body);
-      const pairingMatch = url.pathname.match(/^\/v1\/pairings\/([^/]+)$/);
-      const consumeMatch = url.pathname.match(/^\/v1\/pairings\/([^/]+)\/consume$/);
-      if (pairingMatch && pairingMatch[1] !== 'pending' && request.method === 'GET') return await this.pollPairing(request, parseId(pairingMatch[1] as string, 'pairingId'));
-      if (consumeMatch && request.method === 'POST') return await this.consumePairing(request, parseId(consumeMatch[1] as string, 'pairingId'));
-
-      const device = await this.authenticate(request, body);
-      if (request.method === 'POST' && url.pathname === '/v1/sync') return await this.sync(device, body);
-      if (request.method === 'GET' && url.pathname === '/v1/devices') return this.listDevices(device.device_id);
-      const deviceMatch = url.pathname.match(/^\/v1\/devices\/([^/]+)$/);
-      if (deviceMatch && request.method === 'DELETE') return this.revokeDevice(device.device_id, parseId(deviceMatch[1] as string, 'deviceId'));
-      if (request.method === 'GET' && url.pathname === '/v1/envelopes') return this.listEnvelopes(device.device_id);
-      const envelopeMatch = url.pathname.match(/^\/v1\/envelopes\/([^/]+)$/);
-      if (envelopeMatch && request.method === 'PUT') return await this.putEnvelope(device.device_id, parseId(envelopeMatch[1] as string, 'envelopeId'), body);
-      if (envelopeMatch && request.method === 'DELETE') return this.deleteEnvelope(device.device_id, parseId(envelopeMatch[1] as string, 'envelopeId'));
-      if (request.method === 'GET' && url.pathname === '/v1/pairings/pending') return this.listPendingPairings(device.device_id);
-      const approveMatch = url.pathname.match(/^\/v1\/pairings\/([^/]+)\/approve$/);
-      if (approveMatch && request.method === 'POST') return await this.approvePairing(device.device_id, parseId(approveMatch[1] as string, 'pairingId'), body);
-      throw new ApiError('not_found', 'Endpoint not found.', 404);
-    } catch (error) {
-      if (error instanceof ApiError) return errorResponse(error);
-      if (error instanceof Error && (error.message.includes('SQLITE_FULL') || error.message.includes('database or disk is full'))) {
-        return errorResponse(new ApiError('internal_error', 'Vault storage capacity has been reached.', 507));
+    const url = new URL(request.url);
+    const metrics = createUsageMetrics();
+    return await usageStorage.run(metrics, async () => {
+      const started = Date.now();
+      let body = new Uint8Array();
+      let response: Response;
+      try {
+        body = new Uint8Array(await request.arrayBuffer());
+        if (request.method === 'GET' && url.pathname === '/v1/info') response = this.info();
+        else if (request.method === 'POST' && url.pathname === '/v1/bootstrap/device') response = await this.bootstrap(request, body);
+        else if (request.method === 'POST' && url.pathname === '/v1/recovery/device') response = await this.enrollRecoveryDevice(request, body);
+        else if (request.method === 'POST' && url.pathname === '/v1/pairings') response = await this.createPairing(request, body);
+        else {
+          const pairingMatch = url.pathname.match(/^\/v1\/pairings\/([^/]+)$/);
+          const consumeMatch = url.pathname.match(/^\/v1\/pairings\/([^/]+)\/consume$/);
+          if (pairingMatch && pairingMatch[1] !== 'pending' && request.method === 'GET') response = await this.pollPairing(request, parseId(pairingMatch[1] as string, 'pairingId'));
+          else if (consumeMatch && request.method === 'POST') response = await this.consumePairing(request, parseId(consumeMatch[1] as string, 'pairingId'));
+          else {
+            const device = await this.authenticate(request, body);
+            if (request.method === 'POST' && url.pathname === '/v1/sync') response = await this.sync(device, body);
+            else if (request.method === 'GET' && url.pathname === '/v1/devices') response = this.listDevices(device.device_id);
+            else {
+              const deviceMatch = url.pathname.match(/^\/v1\/devices\/([^/]+)$/);
+              const envelopeMatch = url.pathname.match(/^\/v1\/envelopes\/([^/]+)$/);
+              if (deviceMatch && request.method === 'DELETE') response = this.revokeDevice(device.device_id, parseId(deviceMatch[1] as string, 'deviceId'));
+              else if (request.method === 'GET' && url.pathname === '/v1/envelopes') response = this.listEnvelopes(device.device_id);
+              else if (envelopeMatch && request.method === 'PUT') response = await this.putEnvelope(device.device_id, parseId(envelopeMatch[1] as string, 'envelopeId'), body);
+              else if (envelopeMatch && request.method === 'DELETE') response = this.deleteEnvelope(device.device_id, parseId(envelopeMatch[1] as string, 'envelopeId'));
+              else if (request.method === 'GET' && url.pathname === '/v1/pairings/pending') response = this.listPendingPairings(device.device_id);
+              else {
+                const approveMatch = url.pathname.match(/^\/v1\/pairings\/([^/]+)\/approve$/);
+                if (approveMatch && request.method === 'POST') response = await this.approvePairing(device.device_id, parseId(approveMatch[1] as string, 'pairingId'), body);
+                else throw new ApiError('not_found', 'Endpoint not found.', 404);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        if (error instanceof ApiError) response = errorResponse(error);
+        else if (error instanceof Error && (error.message.includes('SQLITE_FULL') || error.message.includes('database or disk is full'))) {
+          response = errorResponse(new ApiError('internal_error', 'Vault storage capacity has been reached.', 507));
+        } else {
+          console.error(JSON.stringify({ event: 'vault_error', code: 'internal_error' }));
+          response = errorResponse(new ApiError('internal_error', 'An internal error occurred.', 500));
+        }
       }
-      console.error(JSON.stringify({ event: 'vault_error', code: 'internal_error' }));
-      return errorResponse(new ApiError('internal_error', 'An internal error occurred.', 500));
-    }
+      metrics.requestBytes = body.byteLength;
+      metrics.status = response.status;
+      metrics.errorCode = await responseErrorCode(response);
+      metrics.responseBytes = await responseBytes(response);
+      metrics.durationMs = Date.now() - started;
+      try {
+        const access = this.managedAccess();
+        metrics.entitlementTier = access?.tier ?? '';
+        metrics.accessMode = access?.mode ?? '';
+      } catch {
+        // The response and metering must remain best-effort if entitlement lookup fails.
+      }
+      let databaseSizeBytes = 0;
+      try {
+        databaseSizeBytes = this.sql.databaseSize;
+      } catch {
+        // SQLite may be unavailable while a storage failure response is being produced.
+      }
+      if (url.pathname.startsWith('/v1/')) {
+        writeUsageDataPoint(this.env.USAGE_ANALYTICS, {
+          vaultHandle: this.ctx.id.toString(),
+          routeTemplate: routeTemplate(url.pathname),
+          method: request.method,
+          metrics,
+          databaseSizeBytes,
+        });
+      }
+      return response;
+    });
   }
 
   private meta(): MetaRow {
@@ -865,6 +933,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
 
   private async sync(device: DeviceRow, body: Uint8Array): Promise<Response> {
     const input = parseSync(await readJson(body), this.limits);
+    recordMutationMetrics({ mutationsSubmitted: input.mutations.length });
     if (input.mutations.length > 0) this.assertManagedWriteAllowed();
     const digest = await sha256Base64(body);
     const responseJson = this.ctx.storage.transactionSync(() => {
@@ -876,6 +945,33 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
       );
       if (stored) {
         if (stored.request_digest !== digest) throw new ApiError('request_id_reused', 'syncRequestId was reused with a different body.', 409);
+        recordMutationMetrics({
+          idempotentRetry: 1,
+          mutationsApplied: (() => {
+            try {
+              const parsed = JSON.parse(stored.response_json) as SyncResponse;
+              return parsed.mutationResults.filter((result) => result.status === 'ok').length;
+            } catch {
+              return 0;
+            }
+          })(),
+          mutationsConflicted: (() => {
+            try {
+              const parsed = JSON.parse(stored.response_json) as SyncResponse;
+              return parsed.mutationResults.filter((result) => result.status === 'conflict').length;
+            } catch {
+              return 0;
+            }
+          })(),
+          changesReturned: (() => {
+            try {
+              const parsed = JSON.parse(stored.response_json) as SyncResponse;
+              return parsed.changes.length;
+            } catch {
+              return 0;
+            }
+          })(),
+        });
         return stored.response_json;
       }
 
@@ -893,11 +989,13 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
           };
           if (decision.code) result.code = decision.code;
           mutationResults.push(result);
+          recordMutationMetrics({ mutationsConflicted: (usageStorage.getStore()?.mutationsConflicted ?? 0) + 1 });
           continue;
         }
         revision += 1;
         this.writeMutation(mutation, revision);
         mutationResults.push({ itemId: mutation.itemId, status: 'ok', revision });
+        recordMutationMetrics({ mutationsApplied: (usageStorage.getStore()?.mutationsApplied ?? 0) + 1 });
       }
       if (revision !== this.meta().current_revision) this.sql.exec('UPDATE vault_meta SET current_revision = ? WHERE singleton = 1', revision);
 
@@ -922,6 +1020,7 @@ export class VaultDurableObject extends DurableObject<RuntimeEnv> {
       }
       base.hasMore = getOne<{ present: number }>(this.sql, 'SELECT 1 AS present FROM sync_items WHERE revision > ? LIMIT 1', base.nextCursor) !== null;
       assertPageProgress(input.cursor, base.nextCursor, base.hasMore);
+      recordMutationMetrics({ changesReturned: base.changes.length });
       const serialized = JSON.stringify(base);
       if (new TextEncoder().encode(serialized).byteLength > this.limits.maxResponseBytes) throw new ApiError('response_too_large', 'Sync response exceeds maxResponseBytes.', 413);
       const timestamp = nowIso();
